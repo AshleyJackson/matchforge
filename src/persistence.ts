@@ -1,4 +1,4 @@
-import type { MatchId, MatchRecord, PersistenceStore } from "./types.ts";
+import type { MatchId, MatchRecord, PersistenceStore } from "./types";
 
 export class MemoryPersistenceStore implements PersistenceStore {
   private readonly matches = new Map<MatchId, MatchRecord>();

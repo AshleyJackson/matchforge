@@ -16,17 +16,12 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
+    "rootDir": "./src",
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "types": [
       "bun"
     ],
-    "baseUrl": ".",
-    "paths": {
-      "@/*": [
-        "src/*"
-      ]
-    }
   },
   "include": [
     "src/**/*",

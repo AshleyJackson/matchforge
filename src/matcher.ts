@@ -1,10 +1,10 @@
-import { FindMatchInputSchema, IdentifierSchema, ParticipantPreferencesSchema, PoolListSchema, RegisterParticipantSchema } from "./schemas.ts";
+import { FindMatchInputSchema, IdentifierSchema, ParticipantPreferencesSchema, PoolListSchema, RegisterParticipantSchema } from "./schemas";
 import type {
   ClaimId, FindMatchOptions, IdempotencyKey, MatchClaim, MatchId, MatchRecord,
   MatcherOptions, Participant, ParticipantId, ParticipantPreferences, PoolKey, RegisterParticipantInput,
-} from "./types.ts";
-import type { CoordinationStore, PersistenceStore } from "./types.ts";
-import { cloneClaim, clonePreferences } from "./utils.ts";
+} from "./types";
+import type { CoordinationStore, PersistenceStore } from "./types";
+import { cloneClaim, clonePreferences } from "./utils";
 
 export class Matcher {
   private readonly store: CoordinationStore;

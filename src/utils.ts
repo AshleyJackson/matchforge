@@ -1,4 +1,4 @@
-import type { MatchClaim, Participant, ParticipantPreferences } from "./types.ts";
+import type { MatchClaim, Participant, ParticipantPreferences } from "./types";
 
 export function clonePreferences(value: ParticipantPreferences): ParticipantPreferences {
   return JSON.parse(JSON.stringify(value)) as ParticipantPreferences;

@@ -3,8 +3,8 @@ import type {
   RelaxationPolicy,
   ScoredCandidate,
   SelectionStrategy,
-} from "./types.ts";
-import { cloneParticipant, clonePreferences } from "./utils.ts";
+} from "./types";
+import { cloneParticipant, clonePreferences } from "./utils";
 
 export function selectCandidate(
   candidates: ScoredCandidate[],

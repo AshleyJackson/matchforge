@@ -16,18 +16,20 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm,cjs --dts --clean --outDir dist",
+    "build": "tsup src/index.ts --format esm,cjs --clean --outDir dist && tsc --declaration --emitDeclarationOnly --noEmit false --allowImportingTsExtensions false --outDir dist",
     "dev": "tsc --watch",
-    "test": "jest",
+    "test": "bun test",
     "lint": "eslint src --ext .ts"
   },
   "devDependencies": {
-    "@types/bun": "^1.3.14"
+    "@types/bun": "^1.4.2"
   },
   "peerDependencies": {
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "zod": "^4.4.3"
+    "rollup-plugin-dts": "^6.5.1",
+    "tsup": "^8.5.1",
+    "zod": "^4.6.5"
   }
 }

@@ -1,9 +1,9 @@
 import type {
   AtomicClaimInput, ClaimResult, CoordinationStore, MatchClaim, Participant,
   ParticipantId, PoolKey, WaitingEntry,
-} from "./types.ts";
-import { applyRelaxation, selectCandidate } from "./selection.ts";
-import { cloneClaim, cloneParticipant, clonePreferences } from "./utils.ts";
+} from "./types";
+import { applyRelaxation, selectCandidate } from "./selection";
+import { cloneClaim, cloneParticipant, clonePreferences } from "./utils";
 
 class SerialExecutor {
   private tail = Promise.resolve();
