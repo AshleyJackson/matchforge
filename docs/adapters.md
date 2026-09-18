@@ -21,10 +21,16 @@ their database and make `saveMatch()` idempotent by `matchId`.
 ## Distributed adapter contract
 
 A distributed adapter must preserve the atomic claim boundary. The bundled
-Redis/Lua adapter validates state, selects a FIFO candidate from a
-pre-partitioned pool, removes both queue entries, updates participant state, and
-writes the claim in one atomic operation.
+Redis/Lua adapter requires a Zod-validated serializable filter, evaluates a
+bounded recursive filter, selects a FIFO candidate, removes both queue entries,
+updates participant state, stores idempotency data, and writes the claim in one
+atomic operation.
 
-Arbitrary TypeScript compatibility and scoring functions cannot run inside Redis
-Lua. Applications must encode hard constraints in pool keys or provide a
-purpose-built adapter rule.
+The current generic filter operators are `all`, `any`, `not`, and `overlaps`.
+Operands address requester or candidate preferences through JSON paths or use
+literal values. Arbitrary TypeScript compatibility, scoring, and relaxation
+functions cannot run inside Redis Lua and are rejected by the Redis adapter.
+
+The Redis adapter still needs real-server integration tests, cluster-slot
+validation, paginated claim recovery, and load testing before production
+hardening is complete.

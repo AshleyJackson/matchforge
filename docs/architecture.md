@@ -12,6 +12,7 @@ application database schemas.
 - `src/store.ts` — in-memory coordination implementation
 - `src/redis.ts` — Redis/Lua coordination implementation
 - `src/persistence.ts` — in-memory durable-match implementation
+- `src/filters.ts` — serializable filter evaluation
 - `src/selection.ts` — candidate selection and relaxation
 - `src/utils.ts` — defensive cloning helpers
 
@@ -22,9 +23,9 @@ requester and candidate are still waiting, evaluates the configured rules, remov
 both entries from the waiting index, changes both states to `claimed`, and writes a
 short-lived claim as one operation.
 
-The in-memory adapter serializes this operation with a promise queue. A future
-Redis adapter can implement the same contract with a Lua script without changing
-the `Matcher` API.
+The in-memory adapter serializes this operation with a promise queue. The Redis
+adapter implements the same contract with bounded Lua scripts and rejects
+non-serializable callbacks.
 
 ## Claim lifecycle
 

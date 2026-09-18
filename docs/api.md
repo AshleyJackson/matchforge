@@ -33,5 +33,25 @@ const result = await matcher.findMatch({
 });
 ```
 
+Distributed adapters require a serializable filter. Filters are domain-neutral
+and use JSON paths:
+
+```ts
+const filter = {
+  op: "all",
+  filters: [
+    {
+      op: "overlaps",
+      left: { source: "requester", path: ["interests"] },
+      right: { source: "candidate", path: ["interests"] },
+    },
+  ],
+} as const;
+```
+
+The Redis adapter supports `all`, `any`, `not`, and `overlaps` with FIFO
+selection. It rejects arbitrary TypeScript callbacks because they cannot execute
+inside an atomic Redis Lua script.
+
 Use a `PersistenceStore` in production. The coordination store owns ephemeral
 waiting and claims; the persistence store owns durable matches.

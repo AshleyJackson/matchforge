@@ -1,67 +1,35 @@
+import { z } from "zod";
+import {
+  FindMatchInputSchema,
+  MatchContextSchema,
+  MatchClaimSchema,
+  MatchRecordSchema,
+  ParticipantSchema,
+  ParticipantPreferencesSchema,
+  ParticipantStateSchema,
+  RelaxationPolicySchema,
+  SerializableFilterSchema,
+  SerializableSelectionStrategySchema,
+  WaitingEntrySchema,
+} from "./schemas";
+
 export type ParticipantId = string;
 export type PoolKey = string;
 export type ClaimId = string;
 export type MatchId = string;
 export type IdempotencyKey = string;
 
-export interface ParticipantPreferences {
-  [key: string]: unknown;
-}
+export type ParticipantPreferences = z.infer<typeof ParticipantPreferencesSchema>;
+export type SerializableFilter = z.infer<typeof SerializableFilterSchema>;
+export type SerializableSelectionStrategy = z.infer<typeof SerializableSelectionStrategySchema>;
 
-export type ParticipantState =
-  | "created" | "waiting" | "claimed" | "matched"
-  | "away" | "cancelled" | "expired" | "left";
+export type ParticipantState = z.infer<typeof ParticipantStateSchema>;
+export type Participant = z.infer<typeof ParticipantSchema>;
+export type WaitingEntry = z.infer<typeof WaitingEntrySchema>;
+export type MatchClaim = z.infer<typeof MatchClaimSchema>;
+export type MatchRecord = z.infer<typeof MatchRecordSchema>;
 
-export interface Participant {
-  id: ParticipantId;
-  preferences: ParticipantPreferences;
-  version: number;
-  state: ParticipantState;
-  joinedAt: number;
-  lastHeartbeatAt: number;
-  pools: PoolKey[];
-  metadata?: Record<string, unknown>;
-}
-
-export interface WaitingEntry {
-  participantId: ParticipantId;
-  poolKey: PoolKey;
-  scoreHint?: number;
-  joinedAt: number;
-  version: number;
-}
-
-export interface MatchClaim {
-  claimId: ClaimId;
-  matchId: MatchId;
-  poolKey: PoolKey;
-  participants: Array<{
-    id: ParticipantId;
-    version: number;
-    snapshot: ParticipantPreferences;
-  }>;
-  state: "reserved" | "committed" | "expired" | "rolled_back";
-  createdAt: number;
-  expiresAt: number;
-  strategy: string;
-  recoveryToken: string;
-}
-
-export interface MatchRecord {
-  matchId: MatchId;
-  claimId: ClaimId;
-  poolKey: PoolKey;
-  participantIds: ParticipantId[];
-  createdAt: number;
-  status: "active" | "ended" | "failed";
-}
-
-export interface MatchContext {
-  now: number;
-  waitTimeMs: number;
-  poolKey: PoolKey;
-  attempt: number;
-}
+export type MatchContext = z.infer<typeof MatchContextSchema>;
 
 export type CompatibilityFn = (
   requester: Participant,
@@ -75,18 +43,13 @@ export type ScoreFn = (
   context: MatchContext,
 ) => number | null | Promise<number | null>;
 
-export interface RelaxationPolicy {
-  stages: Array<{
-    afterMs: number;
-    relax: (preferences: ParticipantPreferences) => ParticipantPreferences;
-  }>;
-}
+export type RelaxationPolicy = z.infer<typeof RelaxationPolicySchema>;
 
-export interface ScoredCandidate {
+export type ScoredCandidate = {
   participant: Participant;
   score: number;
   entry: WaitingEntry;
-}
+};
 
 export type SelectionStrategy =
   | { type: "fifo" }
@@ -111,12 +74,15 @@ export interface AtomicClaimInput {
   compatibility?: CompatibilityFn;
   score?: ScoreFn;
   relax?: RelaxationPolicy;
+  filter?: SerializableFilter;
   claimTtlMs: number;
   claimId: ClaimId;
   matchId: MatchId;
   idempotencyKey?: IdempotencyKey;
   random: () => number;
 }
+
+export type FindMatchInput = z.infer<typeof FindMatchInputSchema>;
 
 export interface CoordinationStore {
   atomicClaim(input: AtomicClaimInput): Promise<ClaimResult>;
@@ -127,8 +93,14 @@ export interface CoordinationStore {
   removeFromWaitingIndex(poolKey: PoolKey, participantId: ParticipantId): Promise<void>;
   getClaim(claimId: ClaimId): Promise<MatchClaim | null>;
   putClaim(claim: MatchClaim): Promise<void>;
+  commitClaim(claimId: ClaimId): Promise<boolean>;
+  rollbackClaim(claimId: ClaimId): Promise<boolean>;
+  clearIdempotency(key: IdempotencyKey): Promise<void>;
   getQueueDepth(poolKey: PoolKey): Promise<number>;
-  recoverExpiredClaims(now: number): Promise<MatchClaim[]>;
+  recoverExpiredClaims(
+    now: number,
+    hasDurableMatch?: (claim: MatchClaim) => Promise<boolean>,
+  ): Promise<MatchClaim[]>;
 }
 
 export interface PersistenceStore {
@@ -171,6 +143,7 @@ export interface FindMatchOptions {
   compatibility?: CompatibilityFn;
   score?: ScoreFn;
   relax?: RelaxationPolicy;
+  filter?: SerializableFilter;
   idempotencyKey?: IdempotencyKey;
   claimTtlMs?: number;
 }

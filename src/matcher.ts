@@ -4,7 +4,7 @@ import type {
   MatcherOptions, Participant, ParticipantId, ParticipantPreferences, PoolKey, RegisterParticipantInput,
 } from "./types";
 import type { CoordinationStore, PersistenceStore } from "./types";
-import { cloneClaim, clonePreferences } from "./utils";
+import { clonePreferences } from "./utils";
 
 export class Matcher {
   private readonly store: CoordinationStore;
@@ -15,7 +15,6 @@ export class Matcher {
   private readonly defaultClaimTtlMs: number;
   private readonly defaultScanLimit: number;
   private readonly heartbeatTimeoutMs: number;
-  private readonly idempotency = new Map<IdempotencyKey, MatchClaim>();
 
   constructor(options: MatcherOptions) {
     this.store = options.store;
@@ -85,23 +84,20 @@ export class Matcher {
 
   async findMatch(options: FindMatchOptions) {
     FindMatchInputSchema.parse(options);
-    if (options.idempotencyKey) {
-      const previous = this.idempotency.get(options.idempotencyKey);
-      if (previous) return { status: "matched" as const, claim: cloneClaim(previous)! };
-    }
     const result = await this.store.atomicClaim({
       ...options,
       now: this.clock(),
       scanLimit: options.scanLimit ?? this.defaultScanLimit,
       excludeIds: options.excludeIds ?? [],
       strategy: options.strategy ?? { type: "fifo" },
+      filter: options.filter,
       claimTtlMs: options.claimTtlMs ?? this.defaultClaimTtlMs,
       claimId: this.idGenerator(),
       matchId: this.idGenerator(),
       random: this.random,
     });
     if (result.status !== "matched") return result;
-    if (options.idempotencyKey) this.idempotency.set(options.idempotencyKey, cloneClaim(result.claim)!);
+    if (result.claim.state === "committed") return result;
     if (this.persistence) {
       try {
         await this.persistence.saveMatch({
@@ -115,6 +111,7 @@ export class Matcher {
         await this.commitClaim(result.claim.claimId);
       } catch (error) {
         await this.rollbackClaim(result.claim.claimId, "persistence failed");
+        if (options.idempotencyKey) await this.store.clearIdempotency(options.idempotencyKey);
         return { status: "error" as const, error: error instanceof Error ? error : new Error(String(error)) };
       }
     }
@@ -122,24 +119,11 @@ export class Matcher {
   }
 
   async commitClaim(claimId: ClaimId): Promise<void> {
-    const claim = await this.store.getClaim(claimId);
-    if (!claim || claim.state !== "reserved") throw new Error(`claim ${claimId} is not reservable`);
-    claim.state = "committed";
-    await this.store.putClaim(claim);
-    for (const participant of claim.participants) {
-      await this.store.updateParticipant(participant.id, (current) => ({ ...current, state: "matched", version: current.version + 1 }));
-    }
+    if (!(await this.store.commitClaim(claimId))) throw new Error(`claim ${claimId} is not reservable`);
   }
 
   async rollbackClaim(claimId: ClaimId, _reason?: string): Promise<void> {
-    const claim = await this.store.getClaim(claimId);
-    if (!claim || claim.state !== "reserved") return;
-    claim.state = "rolled_back";
-    await this.store.putClaim(claim);
-    for (const participant of claim.participants) {
-      const current = await this.store.updateParticipant(participant.id, (value) => ({ ...value, state: "waiting", version: value.version + 1 }));
-      if (current) await this.store.addToWaitingIndex({ participantId: current.id, poolKey: claim.poolKey, joinedAt: current.joinedAt, version: current.version });
-    }
+    await this.store.rollbackClaim(claimId);
   }
 
   async completeMatch(matchId: MatchId): Promise<void> {
@@ -150,7 +134,11 @@ export class Matcher {
   getClaim(id: ClaimId): Promise<MatchClaim | null> { return this.store.getClaim(id); }
   getMatch(id: MatchId): Promise<MatchRecord | null> { return this.persistence?.getMatch(id) ?? Promise.resolve(null); }
   getQueueDepth(poolKey: PoolKey): Promise<number> { return this.store.getQueueDepth(poolKey); }
-  recover(): Promise<MatchClaim[]> { return this.store.recoverExpiredClaims(this.clock()); }
+  recover(): Promise<MatchClaim[]> {
+    return this.store.recoverExpiredClaims(this.clock(), async (claim) =>
+      !!(await this.persistence?.getMatch(claim.matchId)),
+    );
+  }
 
   async isAlive(id: ParticipantId): Promise<boolean> {
     const participant = await this.getParticipant(id);

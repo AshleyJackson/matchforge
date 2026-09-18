@@ -1,19 +1,21 @@
 import type { MatchId, MatchRecord, PersistenceStore } from "./types";
+import { MatchRecordSchema } from "./schemas";
 
 export class MemoryPersistenceStore implements PersistenceStore {
   private readonly matches = new Map<MatchId, MatchRecord>();
 
   async saveMatch(record: MatchRecord): Promise<void> {
-    const existing = this.matches.get(record.matchId);
-    if (existing && JSON.stringify(existing) !== JSON.stringify(record)) {
-      throw new Error(`match ${record.matchId} already exists with different data`);
+    const validated = MatchRecordSchema.parse(record);
+    const existing = this.matches.get(validated.matchId);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(validated)) {
+      throw new Error(`match ${validated.matchId} already exists with different data`);
     }
-    this.matches.set(record.matchId, { ...record, participantIds: [...record.participantIds] });
+    this.matches.set(validated.matchId, { ...validated, participantIds: [...validated.participantIds] });
   }
 
   async getMatch(matchId: MatchId): Promise<MatchRecord | null> {
     const match = this.matches.get(matchId);
-    return match ? { ...match, participantIds: [...match.participantIds] } : null;
+    return match ? MatchRecordSchema.parse({ ...match, participantIds: [...match.participantIds] }) : null;
   }
 
   async completeMatch(matchId: MatchId): Promise<void> {

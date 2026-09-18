@@ -12,9 +12,10 @@ Implemented in the current repository:
 - Pair-only matchmaking types and state transitions.
 - `Matcher` orchestration facade.
 - In-memory `CoordinationStore` with serialized atomic claims.
-- Redis/Lua coordination adapter in the single `matchforge` package for
-  coarse, pre-partitioned FIFO pools.
-- In-memory `PersistenceStore`.pa
+- Redis/Lua coordination adapter in the single `matchforge` package with
+  generic serializable filters, FIFO claims, atomic lifecycle scripts, and
+  adapter-side idempotency.
+- In-memory `PersistenceStore`.
 - FIFO, random, best-score, weighted-random, and custom selection.
 - Compatibility predicates, score functions, and relaxation policies.
 - Claim commit, rollback, TTL expiry, and version-checked requeue.
@@ -24,7 +25,8 @@ Implemented in the current repository:
 - Focused source modules and ADR/topic documentation.
 
 The in-memory implementation is a single-process reference implementation. The
-Redis adapter is the horizontally safe path for its supported FIFO pool model.
+Redis adapter is the horizontally safe path for its supported FIFO and
+serializable-filter model, subject to the remaining recovery and load-test work.
 
 ## Priority 0: correctness gaps in the current core
 
@@ -119,10 +121,10 @@ Acceptance criteria:
 
 ## Priority 1: distributed production adapter
 
-### 4. Implement the Redis adapter in `matchforge`
+### 4. Complete production hardening for the Redis adapter
 
-The original plan identifies Redis/Lua as the first production adapter. It is not
-implemented yet.
+The Redis/Lua adapter now exists in `matchforge` and supports bounded FIFO claims
+with a recursive serializable filter AST. It still requires production hardening.
 
 Required components:
 
@@ -132,10 +134,10 @@ Required components:
 - Claim records with TTL.
 - Idempotency records with TTL.
 - Versioned Lua claim script.
-- Atomic Lua path for requester validation, candidate scan, filtering supported by
-  serialized data, selection, queue removal, participant state changes, and claim
-  creation.
-- Claim commit, rollback, expiry, and recovery operations.
+- Atomic Lua path for requester validation, bounded candidate scan, recursive
+  filter evaluation, FIFO selection, queue removal, participant state changes,
+  idempotency lookup, and claim creation.
+- Atomic claim commit, rollback, expiry, and durable-match reconciliation.
 - A native-client/REST-compatible structural client abstraction.
 
 Important design constraint:
@@ -152,7 +154,8 @@ Acceptance criteria:
 - Two concurrent workers cannot claim the same participant.
 - Redis Cluster key placement is documented and tested.
 - Script versions and key schemas are versioned.
-- Contract tests pass for both memory and Redis adapters.
+- Contract tests pass for both memory and Redis adapters, including filter AST
+  validation and lifecycle scripts.
 - TTL cleanup and recovery work after simulated worker crashes.
 
 ### 5. Move idempotency into the coordination store
@@ -368,7 +371,7 @@ pair-only API.
 1. Fix multi-pool and lifecycle semantics.
 2. Add durable claim reconciliation and fault-injection tests.
 3. Move idempotency into the coordination-store contract.
-4. Implement Redis/Lua with adapter contract tests.
+4. Complete Redis recovery, key-slot, and load hardening.
 5. Wire metrics, logging, and sweeper guidance.
 6. Add Postgres persistence guidance and runnable examples.
 7. Add package build, CI, and release automation.

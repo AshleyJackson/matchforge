@@ -70,7 +70,13 @@ describe("in-memory matchmaking", () => {
     await join(matcher, "b");
     const first = await matcher.findMatch({ requesterId: "a", poolKey: "chat", idempotencyKey: "request-1" });
     const second = await matcher.findMatch({ requesterId: "a", poolKey: "chat", idempotencyKey: "request-1" });
-    expect(second).toEqual(first);
+    expect(second.status).toBe("matched");
+    if (first.status === "matched" && second.status === "matched") {
+      expect(second.claim.claimId).toBe(first.claim.claimId);
+      expect(second.claim.matchId).toBe(first.claim.matchId);
+      expect(second.claim.participants).toEqual(first.claim.participants);
+      expect(second.claim.state).toBe("committed");
+    }
   });
 
   test("excludes skipped participants and supports best score", async () => {
@@ -119,5 +125,45 @@ describe("in-memory matchmaking", () => {
       }),
     ).rejects.toThrow("8 KiB");
     await expect(matcher.findMatch({ requesterId: "a", poolKey: "chat", scanLimit: 0 })).rejects.toThrow();
+    await expect(matcher.findMatch({
+      requesterId: "a",
+      poolKey: "chat",
+      filter: { op: "all", filters: [] },
+    })).rejects.toThrow();
+  });
+
+  test("evaluates generic serializable filters without domain-specific rules", async () => {
+    const { matcher } = setup();
+    await join(matcher, "a", { interests: ["music", "games"] });
+    await join(matcher, "b", { interests: ["cooking"] });
+    await join(matcher, "c", { interests: ["games"] });
+
+    const result = await matcher.findMatch({
+      requesterId: "a",
+      poolKey: "chat",
+      filter: {
+        op: "all",
+        filters: [
+          {
+            op: "overlaps",
+            left: { source: "requester", path: ["interests"] },
+            right: { source: "candidate", path: ["interests"] },
+          },
+          {
+            op: "not",
+            filter: {
+              op: "overlaps",
+              left: { source: "candidate", path: ["interests"] },
+              right: { literal: ["cooking"] },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(result.status).toBe("matched");
+    if (result.status === "matched") {
+      expect(result.claim.participants.map((participant) => participant.id)).toEqual(["a", "c"]);
+    }
   });
 });

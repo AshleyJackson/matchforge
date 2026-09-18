@@ -3,6 +3,8 @@ import type {
   ParticipantId, PoolKey, WaitingEntry,
 } from "./types";
 import { applyRelaxation, selectCandidate } from "./selection";
+import { evaluateSerializableFilter } from "./filters";
+import { MatchClaimSchema, ParticipantSchema, WaitingEntrySchema } from "./schemas";
 import { cloneClaim, cloneParticipant, clonePreferences } from "./utils";
 
 class SerialExecutor {
@@ -19,18 +21,23 @@ export class InMemoryCoordinationStore implements CoordinationStore {
   private readonly participants = new Map<ParticipantId, Participant>();
   private readonly waiting = new Map<PoolKey, Map<ParticipantId, WaitingEntry>>();
   private readonly claims = new Map<string, MatchClaim>();
+  private readonly idempotency = new Map<string, MatchClaim>();
   private readonly executor = new SerialExecutor();
 
   async putParticipant(participant: Participant): Promise<void> {
-    await this.executor.run(() => this.participants.set(participant.id, cloneParticipant(participant)!));
+    const validated = ParticipantSchema.parse(participant);
+    await this.executor.run(() => this.participants.set(validated.id, cloneParticipant(validated)!));
   }
 
   async getParticipant(id: ParticipantId): Promise<Participant | null> {
-    return this.executor.run(() => cloneParticipant(this.participants.get(id)));
+    return this.executor.run(async () => {
+      const participant = this.participants.get(id);
+      return participant ? cloneParticipant(ParticipantSchema.parse(participant)) : null;
+    });
   }
 
   async updateParticipant(id: ParticipantId, update: (participant: Participant) => Participant): Promise<Participant | null> {
-    return this.executor.run(() => {
+    return this.executor.run(async () => {
       const current = this.participants.get(id);
       if (!current) return null;
       const next = update(cloneParticipant(current)!);
@@ -40,13 +47,14 @@ export class InMemoryCoordinationStore implements CoordinationStore {
   }
 
   async addToWaitingIndex(entry: WaitingEntry): Promise<void> {
+    const validated = WaitingEntrySchema.parse(entry);
     await this.executor.run(() => {
-      let pool = this.waiting.get(entry.poolKey);
+      let pool = this.waiting.get(validated.poolKey);
       if (!pool) {
         pool = new Map();
-        this.waiting.set(entry.poolKey, pool);
+        this.waiting.set(validated.poolKey, pool);
       }
-      pool.set(entry.participantId, { ...entry });
+      pool.set(validated.participantId, { ...validated });
     });
   }
 
@@ -55,11 +63,51 @@ export class InMemoryCoordinationStore implements CoordinationStore {
   }
 
   async getClaim(claimId: string): Promise<MatchClaim | null> {
-    return this.executor.run(() => cloneClaim(this.claims.get(claimId)));
+    return this.executor.run(() => {
+      const claim = this.claims.get(claimId);
+      return claim ? cloneClaim(MatchClaimSchema.parse(claim)) : null;
+    });
   }
 
   async putClaim(claim: MatchClaim): Promise<void> {
-    await this.executor.run(() => this.claims.set(claim.claimId, cloneClaim(claim)!));
+    const validated = MatchClaimSchema.parse(claim);
+    await this.executor.run(() => this.claims.set(validated.claimId, cloneClaim(validated)!));
+  }
+
+  async commitClaim(claimId: string): Promise<boolean> {
+    return this.executor.run(() => {
+      const claim = this.claims.get(claimId);
+      if (!claim || claim.state !== "reserved") return false;
+      claim.state = "committed";
+      for (const participant of claim.participants) {
+        const current = this.participants.get(participant.id);
+        if (current?.state === "claimed" && current.version === participant.version + 1) {
+          this.participants.set(participant.id, { ...current, state: "matched", version: current.version + 1 });
+        }
+      }
+      for (const [key, idempotentClaim] of this.idempotency) {
+        if (idempotentClaim.claimId === claimId) {
+          this.idempotency.set(key, cloneClaim({ ...claim })!);
+        }
+      }
+      return true;
+    });
+  }
+
+  async rollbackClaim(claimId: string): Promise<boolean> {
+    return this.executor.run(() => {
+      const claim = this.claims.get(claimId);
+      if (!claim || claim.state !== "reserved") return false;
+      claim.state = "rolled_back";
+      for (const participant of claim.participants) {
+        const current = this.participants.get(participant.id);
+        if (!current || current.state !== "claimed" || current.version !== participant.version + 1) continue;
+        const next = { ...current, state: "waiting" as const, version: current.version + 1 };
+        this.participants.set(participant.id, next);
+        this.addEntryUnsafe(next, claim.poolKey);
+      }
+      return true;
+    });
   }
 
   async getQueueDepth(poolKey: PoolKey): Promise<number> {
@@ -68,6 +116,10 @@ export class InMemoryCoordinationStore implements CoordinationStore {
 
   async atomicClaim(input: AtomicClaimInput): Promise<ClaimResult> {
     return this.executor.run(async () => {
+      if (input.idempotencyKey) {
+        const previous = this.idempotency.get(input.idempotencyKey);
+        if (previous) return { status: "matched", claim: cloneClaim(previous)! };
+      }
       const requester = this.participants.get(input.requesterId);
       if (!requester || requester.state !== "waiting") return { status: "stale", reason: "requester is not waiting" };
       const pool = this.waiting.get(input.poolKey);
@@ -91,6 +143,7 @@ export class InMemoryCoordinationStore implements CoordinationStore {
           attempt: index,
         };
         const candidateForRules = applyRelaxation(candidate, input.relax, input.now);
+        if (input.filter && !evaluateSerializableFilter(input.filter, requester, candidate)) continue;
         if (input.compatibility && !(await input.compatibility(requesterForRules, candidateForRules, context))) continue;
         const score = input.score ? await input.score(requesterForRules, candidateForRules, context) : 0;
         if (score === null || Number.isNaN(score)) continue;
@@ -119,15 +172,33 @@ export class InMemoryCoordinationStore implements CoordinationStore {
       this.participants.set(requester.id, { ...requester, state: "claimed", version: requester.version + 1 });
       this.participants.set(selected.participant.id, { ...selected.participant, state: "claimed", version: selected.participant.version + 1 });
       this.claims.set(claim.claimId, claim);
+      if (input.idempotencyKey) this.idempotency.set(input.idempotencyKey, cloneClaim(claim)!);
       return { status: "matched", claim: cloneClaim(claim)! };
     });
   }
 
-  async recoverExpiredClaims(now: number): Promise<MatchClaim[]> {
-    return this.executor.run(() => {
+  async clearIdempotency(key: string): Promise<void> {
+    await this.executor.run(() => this.idempotency.delete(key));
+  }
+
+  async recoverExpiredClaims(
+    now: number,
+    hasDurableMatch?: (claim: MatchClaim) => Promise<boolean>,
+  ): Promise<MatchClaim[]> {
+    return this.executor.run(async () => {
       const expired: MatchClaim[] = [];
       for (const claim of this.claims.values()) {
         if (claim.state !== "reserved" || claim.expiresAt > now) continue;
+        if (hasDurableMatch && await hasDurableMatch(cloneClaim(claim)!)) {
+          claim.state = "committed";
+          for (const participant of claim.participants) {
+            const current = this.participants.get(participant.id);
+            if (current?.state === "claimed" && current.version === participant.version + 1) {
+              this.participants.set(participant.id, { ...current, state: "matched", version: current.version + 1 });
+            }
+          }
+          continue;
+        }
         claim.state = "expired";
         for (const claimed of claim.participants) {
           const participant = this.participants.get(claimed.id);
