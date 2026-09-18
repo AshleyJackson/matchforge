@@ -4,9 +4,11 @@ Framework-agnostic TypeScript matchmaking primitives for correct pair matching.
 
 ## Status
 
-This repository currently contains the v1 core and a first-class in-memory
-coordination adapter. It is suitable for local development and contract tests.
-The Redis/Lua distributed adapter is planned next.
+This repository contains the v1 core, a first-class in-memory coordination
+adapter, and a Redis/Lua coordination adapter. The Redis adapter is intended
+for coarse, pre-partitioned pools and currently supports FIFO claims only.
+Arbitrary TypeScript compatibility and scoring functions remain in-process
+features.
 
 ## Quick start
 

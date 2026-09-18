@@ -12,6 +12,8 @@ Implemented in the current repository:
 - Pair-only matchmaking types and state transitions.
 - `Matcher` orchestration facade.
 - In-memory `CoordinationStore` with serialized atomic claims.
+- Redis/Lua coordination adapter in the single `matchforge` package for
+  coarse, pre-partitioned FIFO pools.
 - In-memory `PersistenceStore`.pa
 - FIFO, random, best-score, weighted-random, and custom selection.
 - Compatibility predicates, score functions, and relaxation policies.
@@ -21,8 +23,8 @@ Implemented in the current repository:
 - Concurrency, idempotency, scoring, exclusion, expiry, and validation tests.
 - Focused source modules and ADR/topic documentation.
 
-The current implementation is a single-process reference implementation. It is
-not yet safe to use as the coordination layer for horizontally scaled workers.
+The in-memory implementation is a single-process reference implementation. The
+Redis adapter is the horizontally safe path for its supported FIFO pool model.
 
 ## Priority 0: correctness gaps in the current core
 
@@ -117,7 +119,7 @@ Acceptance criteria:
 
 ## Priority 1: distributed production adapter
 
-### 4. Implement `@matchforge/adapter-redis`
+### 4. Implement the Redis adapter in `matchforge`
 
 The original plan identifies Redis/Lua as the first production adapter. It is not
 implemented yet.
@@ -134,8 +136,7 @@ Required components:
   serialized data, selection, queue removal, participant state changes, and claim
   creation.
 - Claim commit, rollback, expiry, and recovery operations.
-- Native Redis client adapter.
-- REST/Upstash-compatible adapter or a shared command abstraction.
+- A native-client/REST-compatible structural client abstraction.
 
 Important design constraint:
 
@@ -297,7 +298,8 @@ Required work:
 - Confirm the final npm name and scope.
 - Decide ESM-only versus dual ESM/CommonJS support.
 - Build JavaScript and declaration output.
-- Add an `exports` map with stable public entry points.
+- Add an `exports` map with stable public entry points if subpath exports are
+  needed; keep the adapter in the single `matchforge` package.
 - Add `files` allowlisting.
 - Remove development-only files from published output.
 - Add Node/Bun/edge runtime compatibility guidance.

@@ -20,7 +20,11 @@ their database and make `saveMatch()` idempotent by `matchId`.
 
 ## Distributed adapter contract
 
-A distributed adapter must preserve the atomic claim boundary. Redis/Lua is the
-planned production adapter. Its script must validate state, select a candidate,
-remove both queue entries, update participant state, and write the claim in one
-atomic operation.
+A distributed adapter must preserve the atomic claim boundary. The bundled
+Redis/Lua adapter validates state, selects a FIFO candidate from a
+pre-partitioned pool, removes both queue entries, updates participant state, and
+writes the claim in one atomic operation.
+
+Arbitrary TypeScript compatibility and scoring functions cannot run inside Redis
+Lua. Applications must encode hard constraints in pool keys or provide a
+purpose-built adapter rule.

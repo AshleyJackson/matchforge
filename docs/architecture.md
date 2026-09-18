@@ -10,6 +10,7 @@ application database schemas.
 - `src/schemas.ts` — Zod runtime validation
 - `src/matcher.ts` — public orchestration facade
 - `src/store.ts` — in-memory coordination implementation
+- `src/redis.ts` — Redis/Lua coordination implementation
 - `src/persistence.ts` — in-memory durable-match implementation
 - `src/selection.ts` — candidate selection and relaxation
 - `src/utils.ts` — defensive cloning helpers
