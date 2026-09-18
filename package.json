@@ -16,13 +16,10 @@
     "dist"
   ],
   "scripts": {
-    "start": "bun run src/index.ts",
-    "build": "bun run scripts/build.ts",
-    "test": "bun test",
-    "test:unit": "bun test test/unit",
-    "typecheck": "bunx tsc --noEmit",
-    "cli": "bun run src/cli.ts",
-    "clean": "rm -rf dist"
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean --outDir dist",
+    "dev": "tsc --watch",
+    "test": "jest",
+    "lint": "eslint src --ext .ts"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14"
