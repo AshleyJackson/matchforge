@@ -18,6 +18,7 @@ MatchForge is a framework-agnostic TypeScript core for pair matchmaking.
 - [Security and privacy](security.md)
 - [Observability](observability.md)
 - [Versioning](versioning.md)
+- [Remaining work](../next.md)
 
 ## Architecture decisions
 
