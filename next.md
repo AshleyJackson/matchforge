@@ -12,7 +12,7 @@ Implemented in the current repository:
 - Pair-only matchmaking types and state transitions.
 - `Matcher` orchestration facade.
 - In-memory `CoordinationStore` with serialized atomic claims.
-- In-memory `PersistenceStore`.
+- In-memory `PersistenceStore`.pa
 - FIFO, random, best-score, weighted-random, and custom selection.
 - Compatibility predicates, score functions, and relaxation policies.
 - Claim commit, rollback, TTL expiry, and version-checked requeue.

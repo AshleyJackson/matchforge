@@ -1,11 +1,28 @@
 {
   "name": "matchforge",
-  "module": "index.ts",
+  "version": "0.0.1",
   "type": "module",
-  "private": true,
+  "module": "./dist/index.js",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
+    "start": "bun run src/index.ts",
+    "build": "bun run scripts/build.ts",
     "test": "bun test",
-    "typecheck": "bunx tsc --noEmit"
+    "test:unit": "bun test test/unit",
+    "typecheck": "bunx tsc --noEmit",
+    "cli": "bun run src/cli.ts",
+    "clean": "rm -rf dist"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14"
