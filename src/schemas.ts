@@ -14,7 +14,7 @@ export const FilterOperandSchema = z.union([
  * rank, or any other application concept.
  */
 export const SerializableFilterSchema = z.lazy((): z.ZodTypeAny => z.object({
-  op: z.enum(["all", "any", "not", "overlaps", "equals", "in", "contains"]),
+  op: z.enum(["all", "any", "not", "overlaps", "equals", "in", "contains", "is-empty"]),
   filters: z.array(z.lazy(() => SerializableFilterSchema)).max(32).optional(),
   filter: z.lazy(() => SerializableFilterSchema).optional(),
   left: FilterOperandSchema.optional(),
@@ -31,6 +31,9 @@ export const SerializableFilterSchema = z.lazy((): z.ZodTypeAny => z.object({
     (!value.left || !value.right)
   ) {
     context.addIssue({ code: "custom", path: ["left"], message: `${value.op} requires left and right operands` });
+  }
+  if (value.op === "is-empty" && !value.left) {
+    context.addIssue({ code: "custom", path: ["left"], message: "is-empty requires a left operand" });
   }
 }));
 

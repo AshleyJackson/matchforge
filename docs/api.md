@@ -49,9 +49,33 @@ const filter = {
 } as const;
 ```
 
-The Redis adapter supports `all`, `any`, `not`, and `overlaps` with FIFO
-selection. It rejects arbitrary TypeScript callbacks because they cannot execute
-inside an atomic Redis Lua script.
+For symmetric compatibility rules, build the AST without embedding domain
+knowledge in the adapter:
+
+```ts
+import { buildMutualCompatibilityFilter } from "matchforge";
+
+const filter = buildMutualCompatibilityFilter({
+  rules: [
+    {
+      mode: "equals",
+      requesterPath: ["category"],
+      candidatePath: ["category"],
+      wildcardValues: ["any"],
+    },
+    {
+      mode: "overlaps",
+      requesterPath: ["tags"],
+      candidatePath: ["tags"],
+      emptyMatchesAll: true,
+    },
+  ],
+});
+```
+
+The Redis adapter supports `all`, `any`, `not`, `overlaps`, `equals`, `in`,
+`contains`, and `is-empty` with FIFO selection. It rejects arbitrary runtime
+callbacks because they cannot execute inside an atomic Redis Lua script.
 
 Use a `PersistenceStore` in production. The coordination store owns ephemeral
 waiting and claims; the persistence store owns durable matches.

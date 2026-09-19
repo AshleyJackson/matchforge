@@ -4,6 +4,7 @@ import {
   MatchClaimSchema,
   ParticipantSchema,
   RedisCoordinationStore,
+  buildMutualCompatibilityFilter,
 } from "../index.ts";
 
 class FakeRedis {
@@ -105,11 +106,16 @@ describe("Redis coordination contract", () => {
       scanLimit: 50,
       excludeIds: [],
       strategy: { type: "fifo" },
-      filter: {
-        op: "overlaps",
-        left: { source: "requester", path: ["interests"] },
-        right: { source: "candidate", path: ["interests"] },
-      },
+      filter: buildMutualCompatibilityFilter({
+        rules: [
+          {
+            mode: "overlaps",
+            requesterPath: ["interests"],
+            candidatePath: ["interests"],
+            emptyMatchesAll: true,
+          },
+        ],
+      }),
       claimTtlMs: 20_000,
       claimId: "claim-1",
       matchId: "match-1",
@@ -121,6 +127,7 @@ describe("Redis coordination contract", () => {
     expect(
       redis.evaluations[0]?.keys.every((key) => key.includes("{matchforge:v1}")),
     ).toBe(true);
+    expect(redis.evaluations[0]?.script).toContain("is-empty");
     expect(
       (
         await store.atomicClaim({

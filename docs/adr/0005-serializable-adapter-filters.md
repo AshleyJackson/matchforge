@@ -6,9 +6,10 @@
 ## Decision
 
 Distributed coordination adapters require a Zod-validated, JSON-serializable
-filter expression. The first expression language supports `all`, `any`, `not`,
-and `overlaps`. Filters address requester or candidate preference values through
-generic JSON paths and may compare against literal values.
+filter expression. The expression language supports `all`, `any`, `not`,
+`overlaps`, `equals`, `in`, `contains`, and `is-empty`. Filters address
+requester or candidate preference values through generic JSON paths and may
+compare against literal values.
 
 Redis claims remain FIFO. Arbitrary TypeScript compatibility, scoring, and
 relaxation callbacks are rejected by the Redis adapter because they cannot

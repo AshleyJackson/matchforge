@@ -20,7 +20,7 @@ function evaluate(
   candidate: z.infer<typeof ParticipantPreferencesSchema>,
 ): boolean {
   const node = z.record(z.string(), z.unknown()).parse(filter);
-  const operation = z.enum(["all", "any", "not", "overlaps", "equals", "in", "contains"]).parse(node.op);
+  const operation = z.enum(["all", "any", "not", "overlaps", "equals", "in", "contains", "is-empty"]).parse(node.op);
   switch (operation) {
     case "all":
       return z.array(z.unknown()).parse(node.filters ?? []).every((nested) =>
@@ -55,6 +55,16 @@ function evaluate(
         return container.some((item) => JSON.stringify(item) === JSON.stringify(value));
       }
       return typeof container === "string" && typeof value === "string" && container.includes(value);
+    }
+    case "is-empty": {
+      const value = readOperand(node.left, requester, candidate);
+      return value == null ||
+        (typeof value === "string" && value.length === 0) ||
+        (Array.isArray(value) && value.length === 0) ||
+        (typeof value === "object" &&
+          !Array.isArray(value) &&
+          value !== null &&
+          Object.keys(value).length === 0);
     }
     default:
       return false;

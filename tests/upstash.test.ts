@@ -6,6 +6,7 @@ import {
   RedisCoordinationStore,
   ParticipantSchema,
   RedisClientSchema,
+  buildMutualCompatibilityFilter,
 } from "../index.ts";
 
 const url = process.env.UPSTASH_URL;
@@ -179,6 +180,55 @@ describe("Upstash Redis coordination", () => {
             "c",
           ]);
         }
+      });
+    },
+  );
+
+  integrationTest(
+    "applies symmetric wildcard and empty-collection compatibility in Redis",
+    async () => {
+      await withStore(async (store) => {
+        const a = {
+          ...participant("a", ["music"]),
+          preferences: { interests: ["music"], category: "standard" },
+        };
+        const b = {
+          ...participant("b", []),
+          preferences: { interests: [], category: "any" },
+        };
+        await add(store, a);
+        await add(store, b);
+
+        const result = await store.atomicClaim({
+          requesterId: "a",
+          poolKey: "chat",
+          now: Date.now(),
+          scanLimit: 50,
+          excludeIds: [],
+          strategy: { type: "fifo" as const },
+          filter: buildMutualCompatibilityFilter({
+            rules: [
+              {
+                mode: "equals",
+                requesterPath: ["category"],
+                candidatePath: ["category"],
+                wildcardValues: ["any"],
+              },
+              {
+                mode: "overlaps",
+                requesterPath: ["interests"],
+                candidatePath: ["interests"],
+                emptyMatchesAll: true,
+              },
+            ],
+          }),
+          claimTtlMs: 2_000,
+          claimId: "claim-mutual",
+          matchId: "match-mutual",
+          random: () => 0,
+        });
+
+        expect(result.status).toBe("matched");
       });
     },
   );

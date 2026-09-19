@@ -27,7 +27,10 @@ updates participant state, stores idempotency data, and writes the claim in one
 atomic operation.
 
 The current generic filter operators are `all`, `any`, `not`, `overlaps`,
-`equals`, `in`, and `contains`.
+`equals`, `in`, `contains`, and `is-empty`. The exported
+`buildMutualCompatibilityFilter()` helper composes these primitives for
+symmetric scalar and collection constraints, including configurable wildcard
+values and empty-collection behavior.
 Operands address requester or candidate preferences through JSON paths or use
 literal values. Arbitrary runtime compatibility, scoring, and relaxation
 functions cannot run inside Redis Lua and are rejected by the Redis adapter.

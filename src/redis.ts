@@ -462,6 +462,12 @@ for _, id in ipairs(members) do
             return false
           end
           return type(container) == 'string' and type(value) == 'string' and string.find(container, value, 1, true) ~= nil
+        elseif filter.op == 'is-empty' then
+          local value = operand_value(filter.left)
+          if value == nil then return true end
+          if type(value) == 'string' then return string.len(value) == 0 end
+          if type(value) == 'table' then return next(value) == nil end
+          return false
         end
         return false
       end

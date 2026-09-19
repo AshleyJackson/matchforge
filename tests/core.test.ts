@@ -3,6 +3,7 @@ import {
   InMemoryCoordinationStore,
   Matcher,
   MemoryPersistenceStore,
+  buildMutualCompatibilityFilter,
 } from "../index.ts";
 
 function setup() {
@@ -367,6 +368,38 @@ describe("in-memory matchmaking", () => {
     expect(result.status).toBe("matched");
     if (result.status === "matched") {
       expect(result.claim.participants.map((participant) => participant.id)).toEqual(["a", "c"]);
+    }
+  });
+
+  test("builds symmetric wildcard and empty-collection compatibility filters", async () => {
+    const { matcher } = setup();
+    await join(matcher, "a", { category: "standard", tags: ["music"] });
+    await join(matcher, "b", { category: "any", tags: [] });
+
+    const result = await matcher.findMatch({
+      requesterId: "a",
+      poolKey: "chat",
+      filter: buildMutualCompatibilityFilter({
+        rules: [
+          {
+            mode: "equals",
+            requesterPath: ["category"],
+            candidatePath: ["category"],
+            wildcardValues: ["any"],
+          },
+          {
+            mode: "overlaps",
+            requesterPath: ["tags"],
+            candidatePath: ["tags"],
+            emptyMatchesAll: true,
+          },
+        ],
+      }),
+    });
+
+    expect(result.status).toBe("matched");
+    if (result.status === "matched") {
+      expect(result.claim.participants.map((participant) => participant.id)).toEqual(["a", "b"]);
     }
   });
 });
