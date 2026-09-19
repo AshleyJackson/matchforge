@@ -1,13 +1,13 @@
 # MatchForge architecture
 
-MatchForge is a framework-agnostic TypeScript matchmaking core. Version one matches
+MatchForge is a framework-agnostic TypeScript matchmaking core whose public
+contracts are native Zod schemas. Version one matches
 pairs and deliberately does not own transport, authentication, chat delivery, or
 application database schemas.
 
 ## Module layout
 
-- `src/types.ts` — public contracts and domain types
-- `src/schemas.ts` — Zod runtime validation
+- `src/schemas.ts` — public contracts, runtime validation, and inference source
 - `src/matcher.ts` — public orchestration facade
 - `src/store.ts` — in-memory coordination implementation
 - `src/redis.ts` — Redis/Lua coordination implementation
@@ -40,8 +40,13 @@ non-serializable callbacks.
 
 The core supports FIFO, random, best-score, weighted-random, and custom selection;
 compatibility predicates; score functions; relaxation policies; skip lists;
-heartbeats; idempotency keys; and metrics-ready interfaces.
+heartbeats; idempotency keys; and metrics-ready schema contracts.
 
 The in-memory adapter is for tests, local development, and single-process use. It
-is not horizontally safe. Distributed adapters must implement the same interfaces
+is not horizontally safe. Distributed adapters must satisfy the same Zod-parsed
+contract
 before production multi-instance deployment.
+
+Serverless execution assumptions and crash simulation guidance are documented in
+[`serverless-execution-models.md`](serverless-execution-models.md) and
+[`crash-simulation.md`](crash-simulation.md).

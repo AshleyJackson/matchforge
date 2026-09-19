@@ -38,6 +38,11 @@ bun test
 bunx tsc --noEmit
 ```
 
+When `UPSTASH_URL` and `UPSTASH_TOKEN` are present, `bun test` also runs the
+real Redis integration suite in `tests/upstash.test.ts`. Those tests use a
+unique namespace and clean up their keys. Without those variables, the
+integration tests are skipped.
+
 See [`docs/architecture.md`](docs/architecture.md) and
 [`docs/api.md`](docs/api.md) for the claim protocol and API details.
 The complete documentation index is [`docs/README.md`](docs/README.md), including

@@ -8,28 +8,13 @@ export const FilterOperandSchema = z.union([
   z.object({ literal: z.unknown() }).strict(),
 ]);
 
-type FilterOperand = {
-  source: "requester" | "candidate";
-  path: string[];
-} | {
-  literal: unknown;
-};
-
-type FilterNode = {
-  op: "all" | "any" | "not" | "overlaps";
-  filters?: FilterNode[];
-  filter?: FilterNode;
-  left?: FilterOperand;
-  right?: FilterOperand;
-};
-
 /**
  * Domain-neutral filter AST. The adapter only understands JSON paths and
  * operators; it does not know whether a path represents language, interests,
  * rank, or any other application concept.
  */
-export const SerializableFilterSchema: z.ZodType<FilterNode> = z.lazy(() => z.object({
-  op: z.enum(["all", "any", "not", "overlaps"]),
+export const SerializableFilterSchema = z.lazy((): z.ZodTypeAny => z.object({
+  op: z.enum(["all", "any", "not", "overlaps", "equals", "in", "contains"]),
   filters: z.array(z.lazy(() => SerializableFilterSchema)).max(32).optional(),
   filter: z.lazy(() => SerializableFilterSchema).optional(),
   left: FilterOperandSchema.optional(),
@@ -41,8 +26,11 @@ export const SerializableFilterSchema: z.ZodType<FilterNode> = z.lazy(() => z.ob
   if (value.op === "not" && !value.filter) {
     context.addIssue({ code: "custom", path: ["filter"], message: "not requires a nested filter" });
   }
-  if (value.op === "overlaps" && (!value.left || !value.right)) {
-    context.addIssue({ code: "custom", path: ["left"], message: "overlaps requires left and right operands" });
+  if (
+    ["overlaps", "equals", "in", "contains"].includes(value.op) &&
+    (!value.left || !value.right)
+  ) {
+    context.addIssue({ code: "custom", path: ["left"], message: `${value.op} requires left and right operands` });
   }
 }));
 
@@ -97,6 +85,7 @@ export const MatchClaimSchema = z.object({
   expiresAt: z.number().finite(),
   strategy: IdentifierSchema,
   recoveryToken: IdentifierSchema,
+  requestFingerprint: z.string().min(1).max(4096),
 }).strict();
 
 export const MatchRecordSchema = z.object({
@@ -108,19 +97,13 @@ export const MatchRecordSchema = z.object({
   status: z.enum(["active", "ended", "failed"]),
 }).strict();
 
-export const MatchContextSchema = z.object({
-  now: z.number().finite(),
-  waitTimeMs: z.number().finite().nonnegative(),
-  poolKey: IdentifierSchema,
-  attempt: z.number().int().nonnegative(),
-}).strict();
-
 export const RelaxationPolicySchema = z.object({
   stages: z.array(z.object({
     afterMs: z.number().finite().nonnegative(),
-    relax: z.custom<(preferences: Record<string, unknown>) => Record<string, unknown>>(
-      (value) => typeof value === "function",
-    ),
+    relax: z.function({
+      input: [ParticipantPreferencesSchema],
+      output: ParticipantPreferencesSchema,
+    }),
   }).strict()).max(32),
 }).strict();
 
@@ -139,13 +122,185 @@ export const FindMatchInputSchema = z.object({
   idempotencyKey: IdentifierSchema.optional(),
   claimTtlMs: z.number().int().min(1_000).max(24 * 60 * 60 * 1_000).optional(),
   filter: SerializableFilterSchema.optional(),
-  compatibility: z.custom<(...args: unknown[]) => unknown>((value) => typeof value === "function").optional(),
-  score: z.custom<(...args: unknown[]) => unknown>((value) => typeof value === "function").optional(),
+  compatibility: z.function().optional(),
+  score: z.function().optional(),
   relax: RelaxationPolicySchema.optional(),
 });
 
-export const PoolListSchema = z.array(IdentifierSchema).max(16);
+export const PoolListSchema = z.array(IdentifierSchema).length(1);
 
-export const SerializableSelectionStrategySchema = z.object({
-  type: z.literal("fifo"),
+export const MatchContextSchema = z.object({
+  now: z.number().finite(),
+  waitTimeMs: z.number().finite().nonnegative(),
+  poolKey: IdentifierSchema,
+  attempt: z.number().int().nonnegative(),
+}).strict();
+
+export const ScoredCandidateSchema = z.object({
+  participant: ParticipantSchema,
+  score: z.number().finite(),
+  entry: WaitingEntrySchema,
+}).strict();
+
+export const SerializableSelectionStrategySchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("fifo") }).strict(),
+  z.object({ type: z.literal("random") }).strict(),
+  z.object({ type: z.literal("best-score"), higherIsBetter: z.boolean().optional() }).strict(),
+  z.object({ type: z.literal("weighted-random") }).strict(),
+  z.object({
+    type: z.literal("custom"),
+    select: z.function({
+      input: [z.array(ScoredCandidateSchema)],
+      output: ScoredCandidateSchema.nullable(),
+    }),
+  }).strict(),
+]);
+
+export const CompatibilityFunctionSchema = z.function({
+  input: [ParticipantSchema, ParticipantSchema, MatchContextSchema],
+  output: z.union([z.boolean(), z.promise(z.boolean())]),
+});
+
+export const ScoreFunctionSchema = z.function({
+  input: [ParticipantSchema, ParticipantSchema, MatchContextSchema],
+  output: z.union([z.number().finite(), z.null(), z.promise(z.union([z.number().finite(), z.null()]))]),
+});
+
+export const FindMatchInputSchemaWithFunctions = FindMatchInputSchema.extend({
+  strategy: SerializableSelectionStrategySchema.optional(),
+  compatibility: CompatibilityFunctionSchema.optional(),
+  score: ScoreFunctionSchema.optional(),
+});
+
+export const RegisterParticipantInputSchema = z.object({
+  id: IdentifierSchema,
+  preferences: ParticipantPreferencesSchema,
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  pools: PoolListSchema.optional(),
+}).strict();
+
+export const AtomicClaimInputSchema = z.object({
+  requesterId: IdentifierSchema,
+  poolKey: IdentifierSchema,
+  now: z.number().finite(),
+  scanLimit: z.number().int().positive(),
+  excludeIds: z.array(IdentifierSchema),
+  strategy: SerializableSelectionStrategySchema,
+  compatibility: CompatibilityFunctionSchema.optional(),
+  score: ScoreFunctionSchema.optional(),
+  relax: RelaxationPolicySchema.optional(),
+  filter: SerializableFilterSchema.optional(),
+  claimTtlMs: z.number().int().positive(),
+  claimId: IdentifierSchema,
+  matchId: IdentifierSchema,
+  idempotencyKey: IdentifierSchema.optional(),
+  requestFingerprint: z.string().min(1).max(4096).optional(),
+  random: z.function({ output: z.number().min(0).max(1) }),
+}).strict();
+
+export const ClaimResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("matched"), claim: MatchClaimSchema }).strict(),
+  z.object({ status: z.literal("none") }).strict(),
+  z.object({ status: z.literal("stale"), reason: z.string() }).strict(),
+  z.object({ status: z.literal("error"), error: z.instanceof(Error) }).strict(),
+]);
+
+const AsyncUnitFunctionSchema = z.function({
+  input: [IdentifierSchema],
+  output: z.promise(z.void()),
+});
+
+export const CoordinationStoreSchema = z.object({
+  atomicClaim: z.function({
+    input: [AtomicClaimInputSchema],
+    output: z.promise(ClaimResultSchema),
+  }),
+  putParticipant: z.function({
+    input: [ParticipantSchema],
+    output: z.promise(z.void()),
+  }),
+  getParticipant: z.function({
+    input: [IdentifierSchema],
+    output: z.promise(ParticipantSchema.nullable()),
+  }),
+  updateParticipant: z.function({
+    input: [
+      IdentifierSchema,
+      z.function({
+        input: [ParticipantSchema],
+        output: ParticipantSchema,
+      }),
+    ],
+    output: z.promise(ParticipantSchema.nullable()),
+  }),
+  addToWaitingIndex: z.function({
+    input: [WaitingEntrySchema],
+    output: z.promise(z.void()),
+  }),
+  removeFromWaitingIndex: z.function({
+    input: [IdentifierSchema, IdentifierSchema],
+    output: z.promise(z.void()),
+  }),
+  getClaim: z.function({
+    input: [IdentifierSchema],
+    output: z.promise(MatchClaimSchema.nullable()),
+  }),
+  putClaim: z.function({
+    input: [MatchClaimSchema],
+    output: z.promise(z.void()),
+  }),
+  commitClaim: z.function({
+    input: [IdentifierSchema],
+    output: z.promise(z.boolean()),
+  }),
+  rollbackClaim: z.function({
+    input: [IdentifierSchema],
+    output: z.promise(z.boolean()),
+  }),
+  clearIdempotency: AsyncUnitFunctionSchema,
+  getQueueDepth: z.function({
+    input: [IdentifierSchema],
+    output: z.promise(z.number().int().nonnegative()),
+  }),
+  recoverExpiredClaims: z.function({
+    input: [
+      z.number(),
+      z.function({
+        input: [MatchClaimSchema],
+        output: z.promise(z.boolean()),
+      }).optional(),
+    ],
+    output: z.promise(z.array(MatchClaimSchema)),
+  }),
+}).strict();
+
+export const PersistenceStoreSchema = z.object({
+  saveMatch: z.function({ input: [MatchRecordSchema], output: z.promise(z.void()) }),
+  getMatch: z.function({ input: [IdentifierSchema], output: z.promise(MatchRecordSchema.nullable()) }),
+  completeMatch: z.function({ input: [IdentifierSchema], output: z.promise(z.void()) }),
+}).strict();
+
+export const MetricsSinkSchema = z.object({
+  increment: z.function(),
+  histogram: z.function(),
+  gauge: z.function(),
+}).strict();
+
+export const LoggerSchema = z.object({
+  debug: z.function().optional(),
+  warn: z.function().optional(),
+  error: z.function().optional(),
+}).strict();
+
+export const MatcherOptionsSchema = z.object({
+  store: CoordinationStoreSchema,
+  persistence: PersistenceStoreSchema.optional(),
+  clock: z.function({ output: z.number() }).optional(),
+  idGenerator: z.function({ output: z.string() }).optional(),
+  random: z.function({ output: z.number() }).optional(),
+  logger: LoggerSchema.optional(),
+  metrics: MetricsSinkSchema.optional(),
+  defaultClaimTtlMs: z.number().int().positive().optional(),
+  defaultScanLimit: z.number().int().positive().optional(),
+  heartbeatTimeoutMs: z.number().int().positive().optional(),
 }).strict();

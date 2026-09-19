@@ -8,6 +8,8 @@ MatchForge is a framework-agnostic TypeScript core for pair matchmaking.
 - [Concepts](concepts.md)
 - [Architecture](architecture.md)
 - [Failure recovery](failure-recovery.md)
+- [Serverless execution models](serverless-execution-models.md)
+- [Worker-crash simulation](crash-simulation.md)
 
 ## Operations and design
 

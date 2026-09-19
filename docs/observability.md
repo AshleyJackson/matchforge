@@ -1,6 +1,6 @@
 # Observability
 
-The public `MetricsSink` interface is available for adapters and future matcher
+The public `MetricsSinkSchema` is available for adapters and future matcher
 instrumentation. Recommended metrics include:
 
 - claims by status

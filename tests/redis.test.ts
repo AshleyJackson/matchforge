@@ -1,9 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { RedisCoordinationStore, type RedisClient } from "../index.ts";
-import type { MatchClaim, Participant } from "../src/types.ts";
+import { z } from "zod";
+import {
+  MatchClaimSchema,
+  ParticipantSchema,
+  RedisCoordinationStore,
+} from "../index.ts";
 
-class FakeRedis implements RedisClient {
-  readonly evaluations: Array<{ script: string; keys: string[]; args: string[] }> = [];
+class FakeRedis {
+  readonly evaluations: Array<{
+    script: string;
+    keys: string[];
+    args: string[];
+  }> = [];
   private readonly values = new Map<string, unknown>();
   private readonly sets = new Map<string, Set<string>>();
 
@@ -15,29 +23,49 @@ class FakeRedis implements RedisClient {
     return "OK";
   }
   async del(...keys: string[]): Promise<number> {
-    return keys.reduce((count, key) => count + (this.values.delete(key) ? 1 : 0), 0);
+    return keys.reduce(
+      (count, key) => count + (this.values.delete(key) ? 1 : 0),
+      0,
+    );
   }
-  async zadd(): Promise<number> { return 1; }
-  async zrem(): Promise<number> { return 1; }
-  async zscore(): Promise<number | null> { return 1; }
-  async zrange<T extends string[]>(): Promise<T> { return [] as unknown as T; }
+  async zadd(): Promise<number> {
+    return 1;
+  }
+  async zrem(): Promise<number> {
+    return 1;
+  }
+  async zscore(): Promise<number | null> {
+    return 1;
+  }
+  async zrange<T extends string[]>(): Promise<T> {
+    return [] as unknown as T;
+  }
   async sadd(key: string, ...members: string[]): Promise<number> {
     const set = this.sets.get(key) ?? new Set<string>();
     members.forEach((member) => set.add(member));
     this.sets.set(key, set);
     return members.length;
   }
-  async srem(): Promise<number> { return 1; }
-  async smembers<T extends string[]>(): Promise<T> { return [] as unknown as T; }
-  async eval<T = unknown>(script: string, keys: string[], args: string[]): Promise<T> {
+  async srem(): Promise<number> {
+    return 1;
+  }
+  async smembers<T extends string[]>(): Promise<T> {
+    return [] as unknown as T;
+  }
+  async eval<T = unknown>(
+    script: string,
+    keys: string[],
+    args: string[],
+  ): Promise<T> {
     this.evaluations.push({ script, keys, args });
     if (script.includes("claim.state = 'committed'")) return ["committed"] as T;
-    if (script.includes("claim.state = 'rolled_back'")) return ["rolled_back"] as T;
+    if (script.includes("claim.state = 'rolled_back'"))
+      return ["rolled_back"] as T;
     return ["matched", JSON.stringify(claim)] as T;
   }
 }
 
-const participant = (id: string): Participant => ({
+const participant = (id: string): z.infer<typeof ParticipantSchema> => ({
   id,
   preferences: { interests: ["games"] },
   version: 1,
@@ -47,7 +75,7 @@ const participant = (id: string): Participant => ({
   pools: ["chat"],
 });
 
-const claim: MatchClaim = {
+const claim: z.infer<typeof MatchClaimSchema> = {
   claimId: "claim-1",
   matchId: "match-1",
   poolKey: "chat",
@@ -60,6 +88,7 @@ const claim: MatchClaim = {
   expiresAt: 21_000,
   strategy: "fifo",
   recoveryToken: "claim-1",
+  requestFingerprint: "test-request",
 };
 
 describe("Redis coordination contract", () => {
@@ -90,18 +119,23 @@ describe("Redis coordination contract", () => {
     expect(result.status).toBe("matched");
     expect(redis.evaluations[0]?.args[12]).toContain('"op":"overlaps"');
     expect(
-      (await store.atomicClaim({
-        requesterId: "a",
-        poolKey: "chat",
-        now: 1_000,
-        scanLimit: 50,
-        excludeIds: [],
-        strategy: { type: "fifo" },
-        claimTtlMs: 20_000,
-        claimId: "claim-2",
-        matchId: "match-2",
-        random: () => 0,
-      })).status,
+      redis.evaluations[0]?.keys.every((key) => key.includes("{matchforge:v1}")),
+    ).toBe(true);
+    expect(
+      (
+        await store.atomicClaim({
+          requesterId: "a",
+          poolKey: "chat",
+          now: 1_000,
+          scanLimit: 50,
+          excludeIds: [],
+          strategy: { type: "fifo" },
+          claimTtlMs: 20_000,
+          claimId: "claim-2",
+          matchId: "match-2",
+          random: () => 0,
+        })
+      ).status,
     ).toBe("error");
   });
 
@@ -111,7 +145,15 @@ describe("Redis coordination contract", () => {
     await store.putClaim(claim);
     expect(await store.commitClaim("claim-1")).toBe(true);
     expect(await store.rollbackClaim("claim-1")).toBe(true);
-    expect(redis.evaluations.some(({ script }) => script.includes("claim.state = 'committed'"))).toBe(true);
-    expect(redis.evaluations.some(({ script }) => script.includes("claim.state = 'rolled_back'"))).toBe(true);
+    expect(
+      redis.evaluations.some(({ script }) =>
+        script.includes("claim.state = 'committed'"),
+      ),
+    ).toBe(true);
+    expect(
+      redis.evaluations.some(({ script }) =>
+        script.includes("claim.state = 'rolled_back'"),
+      ),
+    ).toBe(true);
   });
 });

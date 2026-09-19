@@ -1,20 +1,13 @@
-import type {
-  AtomicClaimInput,
-  ClaimResult,
-  CoordinationStore,
-  MatchClaim,
-  Participant,
-  ParticipantId,
-  PoolKey,
-  WaitingEntry,
-} from "./types";
+import { z } from "zod";
 import { SerializableFilterSchema } from "./schemas";
 import {
+  AtomicClaimInputSchema,
+  ClaimResultSchema,
   MatchClaimSchema,
   ParticipantSchema,
   WaitingEntrySchema,
 } from "./schemas";
-import { cloneParticipant } from "./utils";
+import { cloneParticipant, stableSerialize } from "./utils";
 
 /**
  * Minimal Redis contract implemented by both Upstash Redis and native clients.
@@ -22,35 +15,28 @@ import { cloneParticipant } from "./utils";
  * The adapter deliberately depends on a structural contract instead of a
  * Redis package, keeping `matchforge` usable in Bun, Node, and edge runtimes.
  */
-export interface RedisClient {
-  get<T>(key: string): Promise<T | null>;
-  set(
-    key: string,
-    value: unknown,
-    options?: { ex?: number; nx?: boolean },
-  ): Promise<unknown>;
-  del(...keys: string[]): Promise<unknown>;
-  zadd(key: string, value: { score: number; member: string }): Promise<unknown>;
-  zrem(key: string, ...members: string[]): Promise<unknown>;
-  zscore(key: string, member: string): Promise<number | null>;
-  zrange<T extends string[]>(
-    key: string,
-    start: number,
-    stop: number,
-  ): Promise<T>;
-  sadd(key: string, ...members: string[]): Promise<unknown>;
-  srem(key: string, ...members: string[]): Promise<unknown>;
-  smembers<T extends string[]>(key: string): Promise<T>;
-  eval<T = unknown>(script: string, keys: string[], args: string[]): Promise<T>;
-}
+export const RedisClientSchema = z.object({
+  get: z.function({ input: [z.string()], output: z.promise(z.unknown().nullable()) }),
+  set: z.function({ input: [z.string(), z.unknown(), z.unknown().optional()], output: z.promise(z.unknown()) }),
+  del: z.function({ input: [z.string()], output: z.promise(z.unknown()) }),
+  zadd: z.function({ input: [z.string(), z.unknown()], output: z.promise(z.unknown()) }),
+  zrem: z.function({ input: [z.string(), z.string()], output: z.promise(z.unknown()) }),
+  zscore: z.function({ input: [z.string(), z.string()], output: z.promise(z.number().nullable()) }),
+  zrange: z.function({ input: [z.string(), z.number(), z.number()], output: z.promise(z.array(z.string())) }),
+  sadd: z.function({ input: [z.string(), z.string()], output: z.promise(z.unknown()) }),
+  srem: z.function({ input: [z.string(), z.string()], output: z.promise(z.unknown()) }),
+  smembers: z.function({ input: [z.string()], output: z.promise(z.array(z.string())) }),
+  sscan: z.function({ input: [z.string(), z.union([z.string(), z.number()]), z.unknown().optional()], output: z.promise(z.unknown()) }).optional(),
+  eval: z.function({ input: [z.string(), z.array(z.string()), z.array(z.string())], output: z.promise(z.unknown()) }),
+}).passthrough();
 
-export interface RedisCoordinationStoreOptions {
-  redis: RedisClient;
-  namespace?: string;
-  participantTtlSeconds?: number;
-  claimTtlSeconds?: number;
-  claimRetentionSeconds?: number;
-}
+export const RedisCoordinationStoreOptionsSchema = z.object({
+  redis: RedisClientSchema,
+  namespace: z.string().optional(),
+  participantTtlSeconds: z.number().int().positive().optional(),
+  claimTtlSeconds: z.number().int().positive().optional(),
+  claimRetentionSeconds: z.number().int().positive().optional(),
+}).strict();
 
 /**
  * Redis coordination adapter for coarse, pre-partitioned pools.
@@ -61,14 +47,14 @@ export interface RedisCoordinationStoreOptions {
  * by partitioning pools or by adding a purpose-built adapter rule in a later
  * version.
  */
-export class RedisCoordinationStore implements CoordinationStore {
-  private readonly redis: RedisClient;
+export class RedisCoordinationStore {
+  private readonly redis: z.infer<typeof RedisClientSchema>;
   private readonly namespace: string;
   private readonly participantTtlSeconds: number;
   private readonly claimTtlSeconds: number;
   private readonly claimRetentionSeconds: number;
 
-  constructor(options: RedisCoordinationStoreOptions) {
+  constructor(options: z.infer<typeof RedisCoordinationStoreOptionsSchema>) {
     this.redis = options.redis;
     this.namespace = options.namespace ?? "matchforge:v1";
     this.participantTtlSeconds = options.participantTtlSeconds ?? 90;
@@ -76,7 +62,7 @@ export class RedisCoordinationStore implements CoordinationStore {
     this.claimRetentionSeconds = options.claimRetentionSeconds ?? 300;
   }
 
-  async atomicClaim(input: AtomicClaimInput): Promise<ClaimResult> {
+  async atomicClaim(input: z.infer<typeof AtomicClaimInputSchema>): Promise<z.infer<typeof ClaimResultSchema>> {
     if (
       input.compatibility ||
       input.score ||
@@ -93,17 +79,30 @@ export class RedisCoordinationStore implements CoordinationStore {
     if (!input.filter) {
       return {
         status: "error",
-        error: new Error("RedisCoordinationStore requires a serializable filter"),
+        error: new Error(
+          "RedisCoordinationStore requires a serializable filter",
+        ),
       };
     }
     const filter = SerializableFilterSchema.parse(input.filter);
+    const requestFingerprint =
+      input.requestFingerprint ??
+      stableSerialize({
+        requesterId: input.requesterId,
+        poolKey: input.poolKey,
+        scanLimit: input.scanLimit,
+        excludeIds: input.excludeIds,
+        strategy: input.strategy,
+        filter,
+      });
 
-    const raw = await this.redis.eval<string[]>(
+    const raw = z.array(z.unknown()).parse(await this.redis.eval(
       CLAIM_SCRIPT,
       [
         this.participantKey(input.requesterId),
         this.waitingKey(input.poolKey),
         this.idempotencyKey(input.idempotencyKey ?? input.claimId),
+        this.claimIndexKey(),
       ],
       [
         input.requesterId,
@@ -127,42 +126,69 @@ export class RedisCoordinationStore implements CoordinationStore {
         String(this.claimRetentionSeconds),
         JSON.stringify(filter),
         input.idempotencyKey ?? "",
+        requestFingerprint,
       ],
-    );
+    ));
 
+    if (raw?.[0] === "error") {
+      return {
+        status: "error",
+        error: new Error(typeof raw[1] === "string" ? raw[1] : "Redis claim error"),
+      };
+    }
     if (!raw || (raw[0] !== "matched" && raw[0] !== "idempotent")) {
       if (raw?.[0] === "stale")
-        return { status: "stale", reason: raw[1] ?? "requester is not queued" };
+        return {
+          status: "stale",
+          reason:
+            typeof raw[1] === "string" ? raw[1] : "requester is not queued",
+        };
       return { status: "none" };
     }
-    return { status: "matched", claim: MatchClaimSchema.parse(JSON.parse(raw[1]!)) };
+    return {
+      status: "matched",
+      claim: parseClaimResult(raw[1]),
+    };
   }
 
-  async putParticipant(participant: Participant): Promise<void> {
+  async putParticipant(participant: z.infer<typeof ParticipantSchema>): Promise<void> {
     const validated = ParticipantSchema.parse(participant);
     await this.redis.set(this.participantKey(validated.id), validated, {
       ex: this.participantTtlSeconds,
     });
   }
 
-  getParticipant(id: ParticipantId): Promise<Participant | null> {
-    return this.redis.get<unknown>(this.participantKey(id)).then((value) =>
-      value === null ? null : ParticipantSchema.parse(value),
-    );
+  getParticipant(id: string): Promise<z.infer<typeof ParticipantSchema> | null> {
+    return this.redis
+      .get(this.participantKey(id))
+      .then((value) =>
+        value === null ? null : ParticipantSchema.parse(value),
+      );
   }
 
   async updateParticipant(
-    id: ParticipantId,
-    update: (participant: Participant) => Participant,
-  ): Promise<Participant | null> {
-    const current = await this.getParticipant(id);
-    if (!current) return null;
-    const next = update(cloneParticipant(current)!);
-    await this.putParticipant(next);
-    return cloneParticipant(next);
+    id: string,
+    update: (participant: z.infer<typeof ParticipantSchema>) => z.infer<typeof ParticipantSchema>,
+  ): Promise<z.infer<typeof ParticipantSchema> | null> {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const current = await this.getParticipant(id);
+      if (!current) return null;
+      const next = ParticipantSchema.parse(update(cloneParticipant(current)!));
+      const result = z.array(z.string()).parse(await this.redis.eval(
+        UPDATE_PARTICIPANT_SCRIPT,
+        [this.participantKey(id)],
+        [
+          String(current.version),
+          JSON.stringify(next),
+          String(this.participantTtlSeconds),
+        ],
+      ));
+      if (result?.[0] === "updated") return next;
+    }
+    throw new Error(`participant ${id} update conflicted`);
   }
 
-  addToWaitingIndex(entry: WaitingEntry): Promise<void> {
+  addToWaitingIndex(entry: z.infer<typeof WaitingEntrySchema>): Promise<void> {
     const validated = WaitingEntrySchema.parse(entry);
     return this.redis
       .zadd(this.waitingKey(validated.poolKey), {
@@ -173,21 +199,21 @@ export class RedisCoordinationStore implements CoordinationStore {
   }
 
   removeFromWaitingIndex(
-    poolKey: PoolKey,
-    participantId: ParticipantId,
+    poolKey: string,
+    participantId: string,
   ): Promise<void> {
     return this.redis
       .zrem(this.waitingKey(poolKey), participantId)
       .then(() => undefined);
   }
 
-  getClaim(claimId: string): Promise<MatchClaim | null> {
-    return this.redis.get<unknown>(this.claimKey(claimId)).then((value) =>
-      value === null ? null : MatchClaimSchema.parse(value),
-    );
+  getClaim(claimId: string): Promise<z.infer<typeof MatchClaimSchema> | null> {
+    return this.redis
+      .get(this.claimKey(claimId))
+      .then((value) => (value === null ? null : MatchClaimSchema.parse(value)));
   }
 
-  async putClaim(claim: MatchClaim): Promise<void> {
+  async putClaim(claim: z.infer<typeof MatchClaimSchema>): Promise<void> {
     const validated = MatchClaimSchema.parse(claim);
     const seconds = Math.max(
       1,
@@ -202,31 +228,35 @@ export class RedisCoordinationStore implements CoordinationStore {
   async commitClaim(claimId: string): Promise<boolean> {
     const claim = await this.getClaim(claimId);
     if (!claim) return false;
-    const result = await this.redis.eval<string[]>(
+    const result = z.array(z.string()).parse(await this.redis.eval(
       COMMIT_SCRIPT,
       [
         this.claimKey(claimId),
-        ...claim.participants.map((participant) => this.participantKey(participant.id)),
+        ...claim.participants.map((participant) =>
+          this.participantKey(participant.id),
+        ),
         this.idempotencyKey(claim.recoveryToken),
       ],
       [String(this.participantTtlSeconds)],
-    );
+    ));
     return result?.[0] === "committed";
   }
 
   async rollbackClaim(claimId: string): Promise<boolean> {
     const claim = await this.getClaim(claimId);
     if (!claim) return false;
-    const result = await this.redis.eval<string[]>(
+    const result = z.array(z.string()).parse(await this.redis.eval(
       ROLLBACK_SCRIPT,
       [
         this.claimKey(claimId),
-        ...claim.participants.map((participant) => this.participantKey(participant.id)),
+        ...claim.participants.map((participant) =>
+          this.participantKey(participant.id),
+        ),
         this.waitingKey(claim.poolKey),
         this.idempotencyKey(claim.recoveryToken),
       ],
       [String(this.participantTtlSeconds)],
-    );
+    ));
     return result?.[0] === "rolled_back";
   }
 
@@ -234,21 +264,21 @@ export class RedisCoordinationStore implements CoordinationStore {
     await this.redis.del(this.idempotencyKey(key));
   }
 
-  async getQueueDepth(poolKey: PoolKey): Promise<number> {
-    const members = await this.redis.zrange<string[]>(
+  async getQueueDepth(poolKey: string): Promise<number> {
+    const members = z.array(z.string()).parse(await this.redis.zrange(
       this.waitingKey(poolKey),
       0,
       -1,
-    );
+    ));
     return members.length;
   }
 
   async recoverExpiredClaims(
     now: number,
-    hasDurableMatch?: (claim: MatchClaim) => Promise<boolean>,
-  ): Promise<MatchClaim[]> {
-    const claimIds = await this.redis.smembers<string[]>(this.claimIndexKey());
-    const recovered: MatchClaim[] = [];
+    hasDurableMatch?: (claim: z.infer<typeof MatchClaimSchema>) => Promise<boolean>,
+  ): Promise<z.infer<typeof MatchClaimSchema>[]> {
+    const claimIds = await this.scanClaimIds();
+    const recovered: z.infer<typeof MatchClaimSchema>[] = [];
     for (const claimId of claimIds) {
       const claim = await this.getClaim(claimId);
       if (!claim) {
@@ -260,14 +290,14 @@ export class RedisCoordinationStore implements CoordinationStore {
         continue;
       }
       if (claim.expiresAt > now) continue;
-      if (hasDurableMatch && await hasDurableMatch(claim)) {
+      if (hasDurableMatch && (await hasDurableMatch(claim))) {
         if (await this.commitClaim(claimId)) {
           recovered.push({ ...claim, state: "committed" });
           await this.redis.srem(this.claimIndexKey(), claimId);
         }
         continue;
       }
-      const result = await this.redis.eval<string[]>(
+      const result = z.array(z.unknown()).parse(await this.redis.eval(
         RECOVER_SCRIPT,
         [
           this.claimKey(claimId),
@@ -276,9 +306,9 @@ export class RedisCoordinationStore implements CoordinationStore {
           this.participantKey(claim.participants[1]!.id),
         ],
         [String(this.participantTtlSeconds), String(now)],
-      );
+      ));
       if (result?.[0] === "expired") {
-        recovered.push(MatchClaimSchema.parse(JSON.parse(result[1]!)));
+        recovered.push(parseClaimResult(result[1]));
         await this.redis.srem(this.claimIndexKey(), claimId);
       }
     }
@@ -286,15 +316,15 @@ export class RedisCoordinationStore implements CoordinationStore {
   }
 
   private participantPrefix() {
-    return `${this.namespace}:participant:`;
+    return `${this.namespace}:{${this.namespace}}:participant:`;
   }
 
   private claimPrefix() {
-    return `${this.namespace}:claim:`;
+    return `${this.namespace}:{${this.namespace}}:claim:`;
   }
 
   private claimIndexKey() {
-    return `${this.namespace}:claims`;
+    return `${this.namespace}:{${this.namespace}}:claims`;
   }
 
   private participantKey(id: string) {
@@ -306,24 +336,65 @@ export class RedisCoordinationStore implements CoordinationStore {
   }
 
   private idempotencyKey(id: string) {
-    return `${this.namespace}:idempotency:${id}`;
+    return `${this.namespace}:{${this.namespace}}:idempotency:${id}`;
   }
 
   private waitingKey(pool: string) {
-    return `${this.namespace}:waiting:${pool}`;
+    return `${this.namespace}:{${this.namespace}}:waiting:${pool}`;
+  }
+
+  private async scanClaimIds(): Promise<string[]> {
+    if (!this.redis.sscan) {
+      return z.array(z.string()).parse(await this.redis.smembers(this.claimIndexKey()));
+    }
+    const ids: string[] = [];
+    let cursor = "0";
+    do {
+      const [nextCursor, members] = z.tuple([z.string(), z.array(z.string())]).parse(
+        await this.redis.sscan(
+        this.claimIndexKey(),
+        cursor,
+        { count: 100 },
+        ),
+      );
+      ids.push(...members);
+      cursor = String(nextCursor);
+    } while (cursor !== "0");
+    return ids;
   }
 }
 
+function parseClaimResult(value: unknown): z.infer<typeof MatchClaimSchema> {
+  if (typeof value === "string")
+    return MatchClaimSchema.parse(JSON.parse(value));
+  return MatchClaimSchema.parse(value);
+}
+
+const UPDATE_PARTICIPANT_SCRIPT = `
+local raw = redis.call('get', KEYS[1])
+if not raw then return {'missing'} end
+local participant = cjson.decode(raw)
+if participant.version ~= tonumber(ARGV[1]) then return {'conflict'} end
+redis.call('set', KEYS[1], ARGV[2], 'EX', ARGV[3])
+return {'updated'}
+`;
+
 const CLAIM_SCRIPT = `
+if ARGV[14] ~= '' then
+  local existing = redis.call('get', KEYS[3])
+  if existing then
+    local previous = cjson.decode(existing)
+    if previous.requestFingerprint ~= ARGV[15] then
+      return {'error', 'idempotency key reused with different request'}
+    end
+    return {'idempotent', existing}
+  end
+end
 local requester = redis.call('get', KEYS[1])
 if not requester then return {'stale', 'requester is missing'} end
 local me = cjson.decode(requester)
 if me.state ~= 'waiting' then return {'stale', 'requester is not waiting'} end
 if not redis.call('zscore', KEYS[2], ARGV[1]) then return {'stale', 'requester is not queued'} end
-if ARGV[14] ~= '' then
-  local existing = redis.call('get', KEYS[3])
-  if existing then return {'idempotent', existing} end
-end
 
 local excluded = {}
 for _, id in ipairs(cjson.decode(ARGV[4])) do excluded[id] = true end
@@ -371,6 +442,26 @@ for _, id in ipairs(members) do
             end
           end
           return false
+        elseif filter.op == 'equals' then
+          return cjson.encode(operand_value(filter.left)) == cjson.encode(operand_value(filter.right))
+        elseif filter.op == 'in' then
+          local value = operand_value(filter.left)
+          local values = operand_value(filter.right)
+          if type(values) ~= 'table' then return false end
+          for _, item in ipairs(values) do
+            if cjson.encode(value) == cjson.encode(item) then return true end
+          end
+          return false
+        elseif filter.op == 'contains' then
+          local container = operand_value(filter.left)
+          local value = operand_value(filter.right)
+          if type(container) == 'table' then
+            for _, item in ipairs(container) do
+              if cjson.encode(value) == cjson.encode(item) then return true end
+            end
+            return false
+          end
+          return type(container) == 'string' and type(value) == 'string' and string.find(container, value, 1, true) ~= nil
         end
         return false
       end
@@ -388,7 +479,8 @@ for _, id in ipairs(members) do
           createdAt = tonumber(ARGV[2]),
           expiresAt = tonumber(ARGV[2]) + tonumber(ARGV[9]) * 1000,
           strategy = 'fifo',
-          recoveryToken = ARGV[14] ~= '' and ARGV[14] or ARGV[7]
+          recoveryToken = ARGV[14] ~= '' and ARGV[14] or ARGV[7],
+          requestFingerprint = ARGV[15]
         }
         redis.call('zrem', KEYS[2], ARGV[1], id)
         me.state = 'claimed'
@@ -398,6 +490,7 @@ for _, id in ipairs(members) do
         redis.call('set', KEYS[1], cjson.encode(me), 'EX', ARGV[11])
         redis.call('set', ARGV[5] .. id, cjson.encode(candidate), 'EX', ARGV[11])
         redis.call('set', ARGV[6] .. ARGV[7], cjson.encode(claim), 'EX', ARGV[9] + ARGV[12])
+        redis.call('sadd', KEYS[4], ARGV[7])
         if ARGV[14] ~= '' then
           redis.call('set', KEYS[3], cjson.encode(claim), 'EX', ARGV[12])
         end
@@ -421,6 +514,9 @@ for index, key in ipairs({KEYS[2], KEYS[3]}) do
   local participant = cjson.decode(participantRaw)
   local snapshot = claim.participants[index]
   if participant.state ~= 'claimed' or participant.version ~= snapshot.version + 1 then return {'conflict'} end
+end
+for index, key in ipairs({KEYS[2], KEYS[3]}) do
+  local participant = cjson.decode(redis.call('get', key))
   participant.state = 'matched'
   participant.version = participant.version + 1
   redis.call('set', key, cjson.encode(participant), 'EX', ARGV[1])

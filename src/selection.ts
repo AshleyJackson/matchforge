@@ -1,16 +1,17 @@
-import type {
-  Participant,
-  RelaxationPolicy,
-  ScoredCandidate,
-  SelectionStrategy,
-} from "./types";
+import { z } from "zod";
+import {
+  ParticipantSchema,
+  RelaxationPolicySchema,
+  ScoredCandidateSchema,
+  SerializableSelectionStrategySchema,
+} from "./schemas";
 import { cloneParticipant, clonePreferences } from "./utils";
 
 export function selectCandidate(
-  candidates: ScoredCandidate[],
-  strategy: SelectionStrategy,
+  candidates: z.infer<typeof ScoredCandidateSchema>[],
+  strategy: z.infer<typeof SerializableSelectionStrategySchema>,
   random: () => number,
-): ScoredCandidate | null {
+): z.infer<typeof ScoredCandidateSchema> | null {
   if (candidates.length === 0) return null;
   if (strategy.type === "fifo") return candidates[0]!;
   if (strategy.type === "random") return candidates[Math.min(candidates.length - 1, Math.floor(random() * candidates.length))]!;
@@ -32,10 +33,10 @@ export function selectCandidate(
 }
 
 export function applyRelaxation(
-  participant: Participant,
-  policy: RelaxationPolicy | undefined,
+  participant: z.infer<typeof ParticipantSchema>,
+  policy: z.infer<typeof RelaxationPolicySchema> | undefined,
   now: number,
-): Participant {
+): z.infer<typeof ParticipantSchema> {
   if (!policy) return cloneParticipant(participant)!;
   let preferences = clonePreferences(participant.preferences);
   for (const stage of [...policy.stages].sort((a, b) => a.afterMs - b.afterMs)) {
