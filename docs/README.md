@@ -14,6 +14,7 @@ MatchForge is a framework-agnostic TypeScript core for pair matchmaking.
 ## Operations and design
 
 - [Adapters](adapters.md)
+- [Redis usage](redis.md)
 - [Matching rules](matching-rules.md)
 - [Guarantees](guarantees.md)
 - [Scaling](scaling.md)

@@ -38,3 +38,5 @@ functions cannot run inside Redis Lua and are rejected by the Redis adapter.
 The Redis adapter still needs real-server integration tests, cluster-slot
 validation, paginated claim recovery, and load testing before production
 hardening is complete.
+
+See [Redis usage](redis.md) for an Upstash setup and runnable example.

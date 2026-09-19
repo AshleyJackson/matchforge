@@ -2,13 +2,19 @@
 
 Framework-agnostic TypeScript matchmaking primitives for correct pair matching.
 
-## Status
+## What it does
 
-This repository contains the v1 core, a first-class in-memory coordination
-adapter, and a Redis/Lua coordination adapter. The Redis adapter is intended
-for coarse, pre-partitioned pools and currently supports FIFO claims only.
-Arbitrary TypeScript compatibility and scoring functions remain in-process
-features.
+MatchForge registers participants, places them into pools, and safely reserves
+pairs under concurrent requests. It supports in-memory coordination for local
+development and Redis/Lua coordination for distributed FIFO matching.
+
+The package provides:
+
+- compatibility functions and scoring for in-process matching
+- serializable filters for Redis/Lua matching
+- atomic claims, commits, rollbacks, and expiry recovery
+- Zod validation for runtime inputs
+- pluggable durable match persistence
 
 ## Quick start
 
@@ -31,10 +37,60 @@ const result = await matcher.findMatch({
 });
 ```
 
+## Redis coordination
+
+Use Redis instead of the in-memory store for distributed deployments:
+
+```ts
+import { Redis } from "@upstash/redis";
+import { z } from "zod";
+import {
+  Matcher,
+  RedisClientSchema,
+  RedisCoordinationStore,
+} from "matchforge";
+
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL!,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+}) as unknown as z.infer<typeof RedisClientSchema>;
+
+const matcher = new Matcher({
+  store: new RedisCoordinationStore({
+    redis,
+    namespace: "my-app:matchmaking",
+  }),
+});
+```
+
+Redis claims use FIFO selection and require serializable filters.
+
+For distributed Redis claims, use a serializable filter:
+
+```ts
+const result = await matcher.findMatch({
+  requesterId: "alice",
+  poolKey: "chat",
+  filter: {
+    op: "overlaps",
+    left: { source: "requester", path: ["interests"] },
+    right: { source: "candidate", path: ["interests"] },
+  },
+});
+```
+
+Filters support `all`, `any`, `not`, `overlaps`, `equals`, `in`, `contains`,
+and `is-empty`.
+
+Redis filters are domain-neutral. They use JSON paths and do not assume whether
+a preference represents a language, game attribute, interest, or support field.
+
 ## Development
 
 ```bash
 bun test
+bun run build
+bun run lint
 bunx tsc --noEmit
 ```
 
@@ -42,8 +98,3 @@ When `UPSTASH_URL` and `UPSTASH_TOKEN` are present, `bun test` also runs the
 real Redis integration suite in `tests/upstash.test.ts`. Those tests use a
 unique namespace and clean up their keys. Without those variables, the
 integration tests are skipped.
-
-See [`docs/architecture.md`](docs/architecture.md) and
-[`docs/api.md`](docs/api.md) for the claim protocol and API details.
-The complete documentation index is [`docs/README.md`](docs/README.md), including
-the architecture decision records in [`docs/adr/`](docs/adr/).
