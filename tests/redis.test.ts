@@ -157,6 +157,17 @@ describe("Redis coordination contract", () => {
         script.includes("claim.state = 'committed'"),
       ),
     ).toBe(true);
+    const commitEvaluation = redis.evaluations.find(({ script }) =>
+      script.includes("claim.state = 'committed'"),
+    );
+    expect(commitEvaluation?.keys).toEqual([
+      "matchforge:v1:{matchforge:v1}:claim:claim-1",
+    ]);
+    expect(commitEvaluation?.args).toEqual([
+      "matchforge:v1:{matchforge:v1}:participant:",
+      "matchforge:v1:{matchforge:v1}:idempotency:",
+      "90",
+    ]);
     expect(
       redis.evaluations.some(({ script }) =>
         script.includes("claim.state = 'rolled_back'"),

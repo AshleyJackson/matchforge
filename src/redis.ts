@@ -226,18 +226,16 @@ export class RedisCoordinationStore {
   }
 
   async commitClaim(claimId: string): Promise<boolean> {
-    const claim = await this.getClaim(claimId);
-    if (!claim) return false;
     const result = z.array(z.string()).parse(await this.redis.eval(
       COMMIT_SCRIPT,
       [
         this.claimKey(claimId),
-        ...claim.participants.map((participant) =>
-          this.participantKey(participant.id),
-        ),
-        this.idempotencyKey(claim.recoveryToken),
       ],
-      [String(this.participantTtlSeconds)],
+      [
+        this.participantPrefix(),
+        this.idempotencyPrefix(),
+        String(this.participantTtlSeconds),
+      ],
     ));
     return result?.[0] === "committed";
   }
@@ -336,7 +334,11 @@ export class RedisCoordinationStore {
   }
 
   private idempotencyKey(id: string) {
-    return `${this.namespace}:{${this.namespace}}:idempotency:${id}`;
+    return `${this.idempotencyPrefix()}${id}`;
+  }
+
+  private idempotencyPrefix() {
+    return `${this.namespace}:{${this.namespace}}:idempotency:`;
   }
 
   private waitingKey(pool: string) {
@@ -514,22 +516,26 @@ if not raw then return {'missing'} end
 local claim = cjson.decode(raw)
 if claim.state == 'committed' then return {'committed'} end
 if claim.state ~= 'reserved' then return {'ignored'} end
-for index, key in ipairs({KEYS[2], KEYS[3]}) do
+local participantKeys = {}
+for index, snapshot in ipairs(claim.participants) do
+  participantKeys[index] = ARGV[1] .. snapshot.id
+end
+for index, key in ipairs(participantKeys) do
   local participantRaw = redis.call('get', key)
   if not participantRaw then return {'conflict'} end
   local participant = cjson.decode(participantRaw)
   local snapshot = claim.participants[index]
   if participant.state ~= 'claimed' or participant.version ~= snapshot.version + 1 then return {'conflict'} end
 end
-for index, key in ipairs({KEYS[2], KEYS[3]}) do
+for index, key in ipairs(participantKeys) do
   local participant = cjson.decode(redis.call('get', key))
   participant.state = 'matched'
   participant.version = participant.version + 1
-  redis.call('set', key, cjson.encode(participant), 'EX', ARGV[1])
+  redis.call('set', key, cjson.encode(participant), 'EX', ARGV[3])
 end
 claim.state = 'committed'
-redis.call('set', KEYS[1], cjson.encode(claim), 'EX', ARGV[1])
-redis.call('set', KEYS[4], cjson.encode(claim), 'EX', ARGV[1])
+redis.call('set', KEYS[1], cjson.encode(claim), 'EX', ARGV[3])
+redis.call('set', ARGV[2] .. claim.recoveryToken, cjson.encode(claim), 'EX', ARGV[3])
 return {'committed'}
 `;
 
