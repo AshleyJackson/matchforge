@@ -22,7 +22,7 @@ contract with their database and make `saveMatch()` idempotent by `matchId`.
 
 A distributed adapter must preserve the atomic claim boundary. The bundled
 Redis/Lua adapter requires a Zod-validated serializable filter, evaluates a
-bounded recursive filter, selects a FIFO candidate, removes both queue entries,
+bounded recursive filter, selects a FIFO or random-offset candidate, removes both queue entries,
 updates participant state, stores idempotency data, and writes the claim in one
 atomic operation.
 

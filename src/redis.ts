@@ -9,6 +9,33 @@ import {
 } from "./schemas";
 import { cloneParticipant, stableSerialize } from "./utils";
 
+type RedisMethod = (...args: any[]) => Promise<unknown>;
+
+/**
+ * Structural contract for the Redis commands used by this adapter.
+ *
+ * The broad argument lists accommodate client-specific overloads. Runtime
+ * validation checks that every command the adapter needs is present.
+ */
+export interface RedisLike {
+  get: RedisMethod;
+  set: RedisMethod;
+  del: RedisMethod;
+  zadd: RedisMethod;
+  zrem: RedisMethod;
+  zscore: RedisMethod;
+  zrange: RedisMethod;
+  sadd: RedisMethod;
+  srem: RedisMethod;
+  smembers: RedisMethod;
+  sscan?: RedisMethod;
+  eval: RedisMethod;
+}
+
+const RedisMethodSchema = z.custom<RedisMethod>(
+  (value) => typeof value === "function",
+);
+
 /**
  * Minimal Redis contract implemented by both Upstash Redis and native clients.
  *
@@ -16,19 +43,19 @@ import { cloneParticipant, stableSerialize } from "./utils";
  * Redis package, keeping `matchforge` usable in Bun, Node, and edge runtimes.
  */
 export const RedisClientSchema = z.object({
-  get: z.function({ input: [z.string()], output: z.promise(z.unknown().nullable()) }),
-  set: z.function({ input: [z.string(), z.unknown(), z.unknown().optional()], output: z.promise(z.unknown()) }),
-  del: z.function({ input: [z.string()], output: z.promise(z.unknown()) }),
-  zadd: z.function({ input: [z.string(), z.unknown()], output: z.promise(z.unknown()) }),
-  zrem: z.function({ input: [z.string(), z.string()], output: z.promise(z.unknown()) }),
-  zscore: z.function({ input: [z.string(), z.string()], output: z.promise(z.number().nullable()) }),
-  zrange: z.function({ input: [z.string(), z.number(), z.number()], output: z.promise(z.array(z.string())) }),
-  sadd: z.function({ input: [z.string(), z.string()], output: z.promise(z.unknown()) }),
-  srem: z.function({ input: [z.string(), z.string()], output: z.promise(z.unknown()) }),
-  smembers: z.function({ input: [z.string()], output: z.promise(z.array(z.string())) }),
-  sscan: z.function({ input: [z.string(), z.union([z.string(), z.number()]), z.unknown().optional()], output: z.promise(z.unknown()) }).optional(),
-  eval: z.function({ input: [z.string(), z.array(z.string()), z.array(z.string())], output: z.promise(z.unknown()) }),
-}).passthrough();
+  get: RedisMethodSchema,
+  set: RedisMethodSchema,
+  del: RedisMethodSchema,
+  zadd: RedisMethodSchema,
+  zrem: RedisMethodSchema,
+  zscore: RedisMethodSchema,
+  zrange: RedisMethodSchema,
+  sadd: RedisMethodSchema,
+  srem: RedisMethodSchema,
+  smembers: RedisMethodSchema,
+  sscan: RedisMethodSchema.optional(),
+  eval: RedisMethodSchema,
+}).loose();
 
 export const RedisCoordinationStoreOptionsSchema = z.object({
   redis: RedisClientSchema,
@@ -38,28 +65,38 @@ export const RedisCoordinationStoreOptionsSchema = z.object({
   claimRetentionSeconds: z.number().int().positive().optional(),
 }).strict();
 
+export type RedisCoordinationStoreOptions = Omit<
+  z.input<typeof RedisCoordinationStoreOptionsSchema>,
+  "redis"
+> & { redis: RedisLike };
+
+const ScanCountSchema = z.coerce.number().int().nonnegative();
+
 /**
  * Redis coordination adapter for coarse, pre-partitioned pools.
  *
  * Redis Lua cannot execute arbitrary TypeScript compatibility or scoring
  * functions. Callers using this adapter must encode hard constraints in the
- * pool key and use FIFO selection. Kismet-specific filters can be represented
- * by partitioning pools or by adding a purpose-built adapter rule in a later
- * version.
+ * pool key and use FIFO or random selection. Kismet-specific filters can be
+ * represented by partitioning pools or by adding a purpose-built adapter rule
+ * in a later version.
  */
 export class RedisCoordinationStore {
-  private readonly redis: z.infer<typeof RedisClientSchema>;
+  private readonly redis: RedisLike;
   private readonly namespace: string;
   private readonly participantTtlSeconds: number;
   private readonly claimTtlSeconds: number;
   private readonly claimRetentionSeconds: number;
 
-  constructor(options: z.infer<typeof RedisCoordinationStoreOptionsSchema>) {
+  constructor(options: RedisCoordinationStoreOptions) {
+    const validated = RedisCoordinationStoreOptionsSchema.parse(options);
+    // Zod copies object members into a new plain object, which would detach
+    // prototype methods from their client instance.
     this.redis = options.redis;
-    this.namespace = options.namespace ?? "matchforge:v1";
-    this.participantTtlSeconds = options.participantTtlSeconds ?? 90;
-    this.claimTtlSeconds = options.claimTtlSeconds ?? 30;
-    this.claimRetentionSeconds = options.claimRetentionSeconds ?? 300;
+    this.namespace = validated.namespace ?? "matchforge:v1";
+    this.participantTtlSeconds = validated.participantTtlSeconds ?? 90;
+    this.claimTtlSeconds = validated.claimTtlSeconds ?? 30;
+    this.claimRetentionSeconds = validated.claimRetentionSeconds ?? 300;
   }
 
   async atomicClaim(input: z.infer<typeof AtomicClaimInputSchema>): Promise<z.infer<typeof ClaimResultSchema>> {
@@ -67,12 +104,12 @@ export class RedisCoordinationStore {
       input.compatibility ||
       input.score ||
       input.relax ||
-      input.strategy.type !== "fifo"
+      (input.strategy.type !== "fifo" && input.strategy.type !== "random")
     ) {
       return {
         status: "error",
         error: new Error(
-          "RedisCoordinationStore supports FIFO claims with serializable filters only",
+          "RedisCoordinationStore supports FIFO and random claims with serializable filters only",
         ),
       };
     }
@@ -127,6 +164,8 @@ export class RedisCoordinationStore {
         JSON.stringify(filter),
         input.idempotencyKey ?? "",
         requestFingerprint,
+        input.strategy.type,
+        input.strategy.type === "random" ? String(input.random()) : "0",
       ],
     ));
 
@@ -143,11 +182,17 @@ export class RedisCoordinationStore {
           reason:
             typeof raw[1] === "string" ? raw[1] : "requester is not queued",
         };
-      return { status: "none" };
+      return {
+        status: "none",
+        scanned: ScanCountSchema.parse(raw?.[1] ?? 0),
+        stale: ScanCountSchema.parse(raw?.[2] ?? 0),
+      };
     }
     return {
       status: "matched",
       claim: parseClaimResult(raw[1]),
+      scanned: ScanCountSchema.parse(raw[2] ?? 0),
+      stale: ScanCountSchema.parse(raw[3] ?? 0),
     };
   }
 
@@ -401,11 +446,21 @@ if not redis.call('zscore', KEYS[2], ARGV[1]) then return {'stale', 'requester i
 local excluded = {}
 for _, id in ipairs(cjson.decode(ARGV[4])) do excluded[id] = true end
 local members = redis.call('zrange', KEYS[2], 0, tonumber(ARGV[3]) - 1)
-for _, id in ipairs(members) do
+local scanned = 0
+local stale = 0
+local offset = 0
+if ARGV[16] == 'random' and #members > 0 then
+  offset = math.min(math.floor(tonumber(ARGV[17]) * #members), #members - 1)
+end
+for index = 1, #members do
+  local memberIndex = ((offset + index - 1) % #members) + 1
+  local id = members[memberIndex]
   if id ~= ARGV[1] and not excluded[id] then
+    scanned = scanned + 1
     local raw = redis.call('get', ARGV[5] .. id)
     if not raw then
       redis.call('zrem', KEYS[2], id)
+      stale = stale + 1
     else
       local candidate = cjson.decode(raw)
       local function read_path(root, path)
@@ -486,7 +541,7 @@ for _, id in ipairs(members) do
           state = 'reserved',
           createdAt = tonumber(ARGV[2]),
           expiresAt = tonumber(ARGV[2]) + tonumber(ARGV[9]) * 1000,
-          strategy = 'fifo',
+          strategy = ARGV[16],
           recoveryToken = ARGV[14] ~= '' and ARGV[14] or ARGV[7],
           requestFingerprint = ARGV[15]
         }
@@ -502,12 +557,12 @@ for _, id in ipairs(members) do
         if ARGV[14] ~= '' then
           redis.call('set', KEYS[3], cjson.encode(claim), 'EX', ARGV[12])
         end
-        return {'matched', cjson.encode(claim)}
+        return {'matched', cjson.encode(claim), scanned, stale}
       end
     end
   end
 end
-return {'none'}
+return {'none', scanned, stale}
 `;
 
 const COMMIT_SCRIPT = `

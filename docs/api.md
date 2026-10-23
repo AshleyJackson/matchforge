@@ -74,7 +74,7 @@ const filter = buildMutualCompatibilityFilter({
 ```
 
 The Redis adapter supports `all`, `any`, `not`, `overlaps`, `equals`, `in`,
-`contains`, and `is-empty` with FIFO selection. It rejects arbitrary runtime
+`contains`, and `is-empty` with FIFO or random selection. It rejects arbitrary runtime
 callbacks because they cannot execute inside an atomic Redis Lua script.
 
 Use a `PersistenceStore` in production. The coordination store owns ephemeral

@@ -29,17 +29,12 @@ Then create the coordination store:
 
 ```ts
 import { Redis } from "@upstash/redis";
-import {
-  Matcher,
-  RedisClientSchema,
-  RedisCoordinationStore,
-} from "matchforge";
-import { z } from "zod";
+import { Matcher, RedisCoordinationStore } from "matchforge";
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-}) as unknown as z.infer<typeof RedisClientSchema>;
+});
 
 const matcher = new Matcher({
   store: new RedisCoordinationStore({
@@ -49,7 +44,13 @@ const matcher = new Matcher({
 });
 ```
 
-Redis claims require FIFO selection and a serializable filter:
+`RedisCoordinationStore` accepts any client that matches the exported
+`RedisLike` interface. The constructor validates its options with
+`RedisCoordinationStoreOptionsSchema` and throws if a required client method is
+missing or a TTL is invalid.
+
+Redis claims accept `fifo` or `random` selection and require a serializable
+filter:
 
 ```ts
 await matcher.register({
@@ -78,6 +79,16 @@ const result = await matcher.findMatch({
 The Redis adapter evaluates filters inside a bounded Lua claim operation.
 Arbitrary TypeScript compatibility, scoring, and relaxation callbacks are not
 supported by Redis because executable functions cannot run inside Lua.
+
+The claim scans at most `min(scanLimit, 100)` of the oldest waiting entries.
+With `strategy: { type: "random" }`, the scan starts at an offset chosen by the
+matcher's `random` function and wraps around inside that window. `fifo` starts
+at the oldest entry.
+
+`matched` and `none` results include two counters for capacity monitoring:
+
+- `scanned`: candidates examined, excluding the requester and `excludeIds`
+- `stale`: waiting entries removed because their participant record expired
 
 ## Namespaces and deployment
 

@@ -43,17 +43,12 @@ Use Redis instead of the in-memory store for distributed deployments:
 
 ```ts
 import { Redis } from "@upstash/redis";
-import { z } from "zod";
-import {
-  Matcher,
-  RedisClientSchema,
-  RedisCoordinationStore,
-} from "matchforge";
+import { Matcher, RedisCoordinationStore } from "matchforge";
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-}) as unknown as z.infer<typeof RedisClientSchema>;
+});
 
 const matcher = new Matcher({
   store: new RedisCoordinationStore({
@@ -63,7 +58,16 @@ const matcher = new Matcher({
 });
 ```
 
-Redis claims use FIFO selection and require serializable filters.
+The store accepts any client that matches the exported `RedisLike` interface,
+so no cast is needed. Options are validated when the store is constructed.
+
+Redis claims support `fifo` and `random` selection and require serializable
+filters. `random` starts the bounded scan at a random offset inside the scan
+window. `matched` and `none` results report `scanned` (candidates examined) and
+`stale` (waiting entries removed because their participant record was gone).
+
+`zod` is a peer dependency (`^4.0.0`), so schemas exported by MatchForge share
+your application's zod instance.
 
 For distributed Redis claims, use a serializable filter:
 

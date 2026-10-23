@@ -1,15 +1,10 @@
 import { Redis } from "@upstash/redis";
-import { z } from "zod";
-import {
-  Matcher,
-  RedisClientSchema,
-  RedisCoordinationStore,
-} from "../index.ts";
+import { Matcher, RedisCoordinationStore } from "../index.ts";
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-}) as unknown as z.infer<typeof RedisClientSchema>;
+});
 
 const matcher = new Matcher({
   store: new RedisCoordinationStore({

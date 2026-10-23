@@ -4,11 +4,6 @@
   "workspaces": {
     "": {
       "name": "npmjs",
-      "dependencies": {
-        "rollup-plugin-dts": "^6.5.1",
-        "tsup": "^8.5.1",
-        "zod": "^4.6.5",
-      },
       "devDependencies": {
         "@babel/eslint-parser": "^7.29.9",
         "@babel/plugin-syntax-typescript": "^8.0.3",
@@ -16,9 +11,13 @@
         "@types/bun": "^1.4.2",
         "@upstash/redis": "^1.38.4",
         "eslint": "^9.39.2",
+        "rollup-plugin-dts": "^6.5.1",
+        "tsup": "^8.5.1",
+        "typescript": "^7.0.2",
+        "zod": "^4.6.5",
       },
       "peerDependencies": {
-        "typescript": "^7.0.2",
+        "zod": "^4.0.0",
       },
     },
   },

@@ -5,9 +5,10 @@ import { z } from "zod";
 import {
   RedisCoordinationStore,
   ParticipantSchema,
-  RedisClientSchema,
   buildMutualCompatibilityFilter,
 } from "../index.ts";
+
+type Participant = z.infer<typeof ParticipantSchema>;
 
 const url = process.env.UPSTASH_URL;
 const token = process.env.UPSTASH_TOKEN;
@@ -17,13 +18,13 @@ const integrationTest = hasUpstash ? test : test.skip;
 function createRedis() {
   if (!url || !token)
     throw new Error("UPSTASH_URL and UPSTASH_TOKEN are required");
-  return new Redis({ url, token }) as unknown as z.infer<typeof RedisClientSchema>;
+  return new Redis({ url, token });
 }
 
 function participant(
   id: string,
   interests: string[] = ["games"],
-): z.infer<typeof ParticipantSchema> {
+): Participant {
   return {
     id,
     preferences: { interests },
@@ -46,7 +47,7 @@ function filter() {
 async function withStore(
   run: (
     store: RedisCoordinationStore,
-    redis: RedisClient,
+    redis: Redis,
     namespace: string,
   ) => Promise<void>,
 ) {
@@ -348,6 +349,76 @@ describe("Upstash Redis coordination", () => {
         expect(
           results.filter((result) => result.status !== "matched"),
         ).toHaveLength(1);
+      });
+    },
+  );
+
+  integrationTest(
+    "reports scan statistics and removes stale waiting entries",
+    async () => {
+      await withStore(async (store) => {
+        const now = Date.now();
+        await add(store, { ...participant("a"), joinedAt: now });
+        await store.addToWaitingIndex({
+          participantId: "c",
+          poolKey: "chat",
+          joinedAt: now + 1,
+          version: 1,
+        });
+        await add(store, { ...participant("b"), joinedAt: now + 2 });
+
+        const result = await store.atomicClaim({
+          requesterId: "a",
+          poolKey: "chat",
+          now: Date.now(),
+          scanLimit: 50,
+          excludeIds: [],
+          strategy: { type: "fifo" },
+          filter: filter(),
+          claimTtlMs: 2_000,
+          claimId: "claim-1",
+          matchId: "match-1",
+          random: () => 0,
+        });
+
+        expect(result).toMatchObject({ status: "matched", scanned: 2, stale: 1 });
+        expect(await store.getQueueDepth("chat")).toBe(0);
+      });
+    },
+  );
+
+  integrationTest(
+    "starts random claims at an offset inside the scan window",
+    async () => {
+      await withStore(async (store) => {
+        const now = Date.now();
+        await add(store, { ...participant("a"), joinedAt: now });
+        await add(store, { ...participant("b"), joinedAt: now + 1 });
+        await add(store, { ...participant("c"), joinedAt: now + 2 });
+        await add(store, { ...participant("d"), joinedAt: now + 3 });
+
+        const result = await store.atomicClaim({
+          requesterId: "a",
+          poolKey: "chat",
+          now: Date.now(),
+          scanLimit: 50,
+          excludeIds: [],
+          strategy: { type: "random" },
+          filter: filter(),
+          claimTtlMs: 2_000,
+          claimId: "claim-2",
+          matchId: "match-2",
+          random: () => 0.99,
+        });
+
+        expect(result).toMatchObject({ status: "matched", scanned: 1, stale: 0 });
+        if (result.status === "matched") {
+          expect(result.claim.strategy).toBe("random");
+          expect(result.claim.participants.map(({ id }) => id)).toEqual([
+            "a",
+            "d",
+          ]);
+        }
       });
     },
   );

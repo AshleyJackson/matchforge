@@ -29,5 +29,5 @@ MatchForge is a framework-agnostic TypeScript core for pair matchmaking.
 
 The current repository implements in-memory coordination and persistence
 adapters plus a Redis/Lua coordination adapter. The Redis adapter supports
-coarse, pre-partitioned FIFO pools; arbitrary TypeScript rules are not executed
+coarse, pre-partitioned FIFO or random-selection pools; arbitrary TypeScript rules are not executed
 inside Redis.

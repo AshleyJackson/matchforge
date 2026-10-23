@@ -202,8 +202,17 @@ export const AtomicClaimInputSchema = z.object({
 }).strict();
 
 export const ClaimResultSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("matched"), claim: MatchClaimSchema }).strict(),
-  z.object({ status: z.literal("none") }).strict(),
+  z.object({
+    status: z.literal("matched"),
+    claim: MatchClaimSchema,
+    scanned: z.number().int().nonnegative().optional(),
+    stale: z.number().int().nonnegative().optional(),
+  }).strict(),
+  z.object({
+    status: z.literal("none"),
+    scanned: z.number().int().nonnegative().optional(),
+    stale: z.number().int().nonnegative().optional(),
+  }).strict(),
   z.object({ status: z.literal("stale"), reason: z.string() }).strict(),
   z.object({ status: z.literal("error"), error: z.instanceof(Error) }).strict(),
 ]);
