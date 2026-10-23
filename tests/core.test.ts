@@ -106,6 +106,99 @@ describe("in-memory matchmaking", () => {
     }
   });
 
+  test("a retry with the same key completes a claim whose first attempt stalled", async () => {
+    const { store } = setup();
+    let stall = true;
+    class StallingPersistenceStore extends MemoryPersistenceStore {
+      override saveMatch(record: Parameters<MemoryPersistenceStore["saveMatch"]>[0]) {
+        if (stall) {
+          stall = false;
+          return new Promise<void>(() => undefined);
+        }
+        return super.saveMatch(record);
+      }
+    }
+    const persistence = new StallingPersistenceStore();
+    const matcher = new Matcher({ store, persistence });
+    await join(matcher, "a");
+    await join(matcher, "b");
+
+    void matcher.findMatch({ requesterId: "a", poolKey: "chat", idempotencyKey: "stalled" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const retry = await matcher.findMatch({
+      requesterId: "a",
+      poolKey: "chat",
+      idempotencyKey: "stalled",
+    });
+
+    expect(retry).toMatchObject({ status: "matched", replayed: true, claim: { state: "committed" } });
+    if (retry.status === "matched")
+      expect(await persistence.getMatch(retry.claim.matchId)).not.toBeNull();
+    expect((await matcher.getParticipant("b"))?.state).toBe("matched");
+  });
+
+  test("findMatch resumes a search from a cursor and checks presence", async () => {
+    const { matcher, advance } = setup();
+    await join(matcher, "a", { tag: "x" });
+    await join(matcher, "b", { tag: "y" });
+    await join(matcher, "c", { tag: "y" });
+    await join(matcher, "d", { tag: "x" });
+    await matcher.heartbeat("a");
+    advance(40_000);
+    await matcher.heartbeat("a");
+    await matcher.heartbeat("d");
+
+    const sameTag = {
+      op: "equals" as const,
+      left: { source: "requester" as const, path: ["tag"] },
+      right: { source: "candidate" as const, path: ["tag"] },
+    };
+    const first = await matcher.findMatch({
+      requesterId: "a",
+      poolKey: "chat",
+      scanLimit: 2,
+      filter: sameTag,
+    });
+    expect(first.status).toBe("none");
+    if (first.status !== "none") return;
+    expect(first.cursor).toBeString();
+
+    const stalePresence = await matcher.findMatch({
+      requesterId: "a",
+      poolKey: "chat",
+      filter: { op: "not", filter: sameTag },
+      maxHeartbeatAgeMs: 30_000,
+    });
+    expect(stalePresence.status).toBe("none");
+
+    const second = await matcher.findMatch({
+      requesterId: "a",
+      poolKey: "chat",
+      scanLimit: 2,
+      filter: sameTag,
+      cursor: first.cursor,
+    });
+    expect(second.status).toBe("matched");
+    if (second.status === "matched")
+      expect(second.claim.participants.map((p) => p.id)).toEqual(["a", "d"]);
+  });
+
+  test("syncParticipant drops exclusions that have already ended", async () => {
+    const { matcher } = setup();
+    const result = await matcher.syncParticipant({
+      id: "a",
+      preferences: {},
+      state: "waiting",
+      pools: ["chat"],
+      joinedAt: 1_000,
+      lastHeartbeatAt: 1_000,
+      exclusions: { old: 999, current: 5_000 },
+    });
+    expect(result.status).toBe("created");
+    expect(result.participant?.exclusions).toEqual({ current: 5_000 });
+    expect(await matcher.getQueueDepth("chat")).toBe(1);
+  });
+
   test("excludes skipped participants and supports best score", async () => {
     const { matcher } = setup();
     await join(matcher, "a");

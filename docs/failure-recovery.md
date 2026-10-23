@@ -10,7 +10,12 @@ the reserved claim back and requeues both participants. The call returns an
 
 An uncommitted claim remains reserved until its TTL. Call `recover()` from a
 lightweight sweeper or before matching to expire claims and requeue participants
-whose versions still match the claim.
+whose versions still match the claim. Each call handles at most `limit` claims
+(default 100), oldest expiry first; call it again when a pass returns a full
+batch.
+
+A client retrying the crashed request with the same idempotency key gets the
+reserved claim back and can finish it. See [Idempotency](idempotency.md).
 
 ## Durable write before commit
 

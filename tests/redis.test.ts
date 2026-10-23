@@ -158,8 +158,8 @@ describe("Redis coordination contract", () => {
       claimInput({ strategy: { type: "random" }, random: () => 0.25 }),
     );
 
-    expect(redis.evaluations[0]?.args.slice(15)).toEqual(["fifo", "0"]);
-    expect(redis.evaluations[1]?.args.slice(15)).toEqual(["random", "0.25"]);
+    expect(redis.evaluations[0]?.args.slice(15, 17)).toEqual(["fifo", "0"]);
+    expect(redis.evaluations[1]?.args.slice(15, 17)).toEqual(["random", "0.25"]);
   });
 
   test("rejects strategies the claim script cannot evaluate", async () => {
@@ -190,7 +190,32 @@ describe("Redis coordination contract", () => {
       status: "matched",
       scanned: 0,
       stale: 0,
+      replayed: true,
     });
+
+    redis.claimReply = ["none", 100, 0, "1000:x99"];
+    expect(await store.atomicClaim(claimInput())).toEqual({
+      status: "none",
+      scanned: 100,
+      stale: 0,
+      cursor: "1000:x99",
+    });
+  });
+
+  test("passes presence and cursor arguments to the claim script", async () => {
+    const redis = new FakeRedis();
+    const store = new RedisCoordinationStore({ redis });
+    await store.atomicClaim(
+      claimInput({ maxHeartbeatAgeMs: 45_000, cursor: "1700000000000:x:y" }),
+    );
+    expect(redis.evaluations[0]?.args.slice(17)).toEqual([
+      "45000",
+      "1700000000000",
+      "x:y",
+    ]);
+    await expect(
+      store.atomicClaim(claimInput({ cursor: "not-a-cursor" })),
+    ).rejects.toThrow("invalid claim cursor");
   });
 
   test("requires a serializable filter and sends its AST to the adapter", async () => {
@@ -262,11 +287,15 @@ describe("Redis coordination contract", () => {
     );
     expect(commitEvaluation?.keys).toEqual([
       "matchforge:v1:{matchforge:v1}:claim:claim-1",
+      "matchforge:v1:{matchforge:v1}:claim-expiry",
     ]);
     expect(commitEvaluation?.args).toEqual([
       "matchforge:v1:{matchforge:v1}:participant:",
       "matchforge:v1:{matchforge:v1}:idempotency:",
       "90",
+      "300",
+      "0",
+      "claim-1",
     ]);
     expect(
       redis.evaluations.some(({ script }) =>

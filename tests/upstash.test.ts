@@ -1,4 +1,3 @@
-import { Redis } from "@upstash/redis";
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -7,18 +6,25 @@ import {
   ParticipantSchema,
   buildMutualCompatibilityFilter,
 } from "../index.ts";
+import {
+  deleteNamespace,
+  integrationBackends,
+  type IntegrationRedis,
+} from "./support/redis.ts";
 
 type Participant = z.infer<typeof ParticipantSchema>;
 
-const url = process.env.UPSTASH_URL;
-const token = process.env.UPSTASH_TOKEN;
-const hasUpstash = Boolean(url && token);
-const integrationTest = hasUpstash ? test : test.skip;
+// Runs against the first configured real Redis (REDIS_URL, then Upstash).
+const backend = integrationBackends()[0];
+const integrationTest = backend ? test : test.skip;
+const opened: IntegrationRedis[] = [];
 
 function createRedis() {
-  if (!url || !token)
-    throw new Error("UPSTASH_URL and UPSTASH_TOKEN are required");
-  return new Redis({ url, token });
+  if (!backend)
+    throw new Error("REDIS_URL or UPSTASH_URL and UPSTASH_TOKEN are required");
+  const redis = backend.create();
+  opened.push(redis);
+  return redis;
 }
 
 function participant(
@@ -47,7 +53,7 @@ function filter() {
 async function withStore(
   run: (
     store: RedisCoordinationStore,
-    redis: Redis,
+    redis: IntegrationRedis,
     namespace: string,
   ) => Promise<void>,
 ) {
@@ -63,23 +69,8 @@ async function withStore(
   try {
     await run(store, redis, namespace);
   } finally {
-    await redis.del(
-      `${namespace}:{${namespace}}:participant:a`,
-      `${namespace}:{${namespace}}:participant:b`,
-      `${namespace}:{${namespace}}:participant:c`,
-      `${namespace}:{${namespace}}:participant:d`,
-      `${namespace}:{${namespace}}:waiting:chat`,
-      `${namespace}:{${namespace}}:claims`,
-      `${namespace}:{${namespace}}:claim:claim-1`,
-      `${namespace}:{${namespace}}:claim:claim-2`,
-      `${namespace}:{${namespace}}:claim:claim-3`,
-      `${namespace}:{${namespace}}:claim:claim-4`,
-      `${namespace}:{${namespace}}:claim:claim-concurrent-1`,
-      `${namespace}:{${namespace}}:claim:claim-concurrent-2`,
-      `${namespace}:{${namespace}}:idempotency:request-1`,
-      `${namespace}:{${namespace}}:idempotency:request-2`,
-      `${namespace}:{${namespace}}:idempotency:request-3`,
-    );
+    await deleteNamespace(redis, namespace);
+    for (const client of opened.splice(0)) client.close();
   }
 }
 
@@ -93,7 +84,7 @@ async function add(store: RedisCoordinationStore, value: Participant) {
   });
 }
 
-describe("Upstash Redis coordination", () => {
+describe(`Redis coordination on ${backend?.name ?? "real Redis"}`, () => {
   integrationTest(
     "claims, retries idempotently, and commits atomically",
     async () => {
@@ -128,8 +119,10 @@ describe("Upstash Redis coordination", () => {
           expect(retry.claim.claimId).toBe(first.claim.claimId);
         }
 
-        const pendingClaims = await redis.smembers<string[]>(
-          `${namespace}:{${namespace}}:claims`,
+        const pendingClaims = await redis.zrange(
+          `${namespace}:{${namespace}}:claim-expiry`,
+          0,
+          -1,
         );
         expect(pendingClaims).toContain("claim-1");
         expect(await store.commitClaim("claim-1")).toBe(true);

@@ -53,6 +53,16 @@ export const ParticipantStateSchema = z.enum([
   "away", "cancelled", "expired", "left",
 ]);
 
+/**
+ * Participants this participant must not be matched with, mapped to the time
+ * (epoch ms) the exclusion ends. Claims apply exclusions in both directions.
+ */
+export const ParticipantExclusionsSchema = z
+  .record(IdentifierSchema, z.number().finite())
+  .refine((value) => Object.keys(value).length <= 256, {
+    message: "exclusions must have 256 entries or fewer",
+  });
+
 export const ParticipantSchema = z.object({
   id: IdentifierSchema,
   preferences: ParticipantPreferencesSchema,
@@ -62,6 +72,9 @@ export const ParticipantSchema = z.object({
   lastHeartbeatAt: z.number().finite(),
   pools: z.array(IdentifierSchema).max(16),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  exclusions: ParticipantExclusionsSchema.optional(),
+  /** Caller-supplied revision of the last applied `syncParticipant()`. */
+  syncRevision: z.number().int().nonnegative().optional(),
 }).strict();
 
 export const WaitingEntrySchema = z.object({
@@ -117,11 +130,16 @@ export const RegisterParticipantSchema = z.object({
   pools: z.array(IdentifierSchema).max(16).optional(),
 });
 
+/** Opaque continuation token returned by a `none` claim result. */
+export const ClaimCursorSchema = z.string().min(1).max(1_024);
+
 export const FindMatchInputSchema = z.object({
   requesterId: IdentifierSchema,
   poolKey: IdentifierSchema,
   scanLimit: z.number().int().min(1).max(10_000).optional(),
   excludeIds: z.array(IdentifierSchema).max(1_000).optional(),
+  maxHeartbeatAgeMs: z.number().int().positive().optional(),
+  cursor: ClaimCursorSchema.optional(),
   idempotencyKey: IdentifierSchema.optional(),
   claimTtlMs: z.number().int().min(1_000).max(24 * 60 * 60 * 1_000).optional(),
   filter: SerializableFilterSchema.optional(),
@@ -188,6 +206,10 @@ export const AtomicClaimInputSchema = z.object({
   now: z.number().finite(),
   scanLimit: z.number().int().positive(),
   excludeIds: z.array(IdentifierSchema),
+  /** Candidates whose last heartbeat is older than this are skipped. */
+  maxHeartbeatAgeMs: z.number().int().positive().optional(),
+  /** Resumes a scan after the last entry examined by a previous `none`. */
+  cursor: ClaimCursorSchema.optional(),
   strategy: SerializableSelectionStrategySchema,
   compatibility: CompatibilityFunctionSchema.optional(),
   score: ScoreFunctionSchema.optional(),
@@ -207,14 +229,49 @@ export const ClaimResultSchema = z.discriminatedUnion("status", [
     claim: MatchClaimSchema,
     scanned: z.number().int().nonnegative().optional(),
     stale: z.number().int().nonnegative().optional(),
+    /** `true` when the claim came from an earlier request with the same idempotency key. */
+    replayed: z.boolean().optional(),
   }).strict(),
   z.object({
     status: z.literal("none"),
     scanned: z.number().int().nonnegative().optional(),
     stale: z.number().int().nonnegative().optional(),
+    /** Present when waiting entries remain beyond the scanned window. */
+    cursor: ClaimCursorSchema.optional(),
   }).strict(),
   z.object({ status: z.literal("stale"), reason: z.string() }).strict(),
   z.object({ status: z.literal("error"), error: z.instanceof(Error) }).strict(),
+]);
+
+/**
+ * Desired coordination state for one participant. `syncParticipant()` writes
+ * it atomically together with the participant's waiting-index entries.
+ */
+export const SyncParticipantInputSchema = z.object({
+  id: IdentifierSchema,
+  preferences: ParticipantPreferencesSchema,
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  /** `claimed` is owned by claims and cannot be written directly. */
+  state: ParticipantStateSchema.exclude(["claimed"]),
+  pools: PoolListSchema,
+  joinedAt: z.number().finite(),
+  lastHeartbeatAt: z.number().finite(),
+  exclusions: ParticipantExclusionsSchema.optional(),
+  /** Write only if the stored version equals this. `0` means "must not exist". */
+  expectedVersion: z.number().int().nonnegative().optional(),
+  /** Caller revision. Writes with a revision at or below the stored one are skipped. */
+  revision: z.number().int().nonnegative().optional(),
+}).strict();
+
+export const SyncParticipantResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("created"), participant: ParticipantSchema }).strict(),
+  z.object({ status: z.literal("updated"), participant: ParticipantSchema }).strict(),
+  /** A live claim holds the participant; nothing was written. */
+  z.object({ status: z.literal("claimed"), participant: ParticipantSchema }).strict(),
+  /** `expectedVersion` did not match; nothing was written. */
+  z.object({ status: z.literal("conflict"), participant: ParticipantSchema.nullable() }).strict(),
+  /** `revision` was not newer than the stored one; nothing was written. */
+  z.object({ status: z.literal("stale"), participant: ParticipantSchema }).strict(),
 ]);
 
 const AsyncUnitFunctionSchema = z.function({
@@ -231,6 +288,10 @@ export const CoordinationStoreSchema = z.object({
     input: [ParticipantSchema],
     output: z.promise(z.void()),
   }),
+  syncParticipant: z.function({
+    input: [SyncParticipantInputSchema],
+    output: z.promise(SyncParticipantResultSchema),
+  }).optional(),
   getParticipant: z.function({
     input: [IdentifierSchema],
     output: z.promise(ParticipantSchema.nullable()),
@@ -281,6 +342,7 @@ export const CoordinationStoreSchema = z.object({
         input: [MatchClaimSchema],
         output: z.promise(z.boolean()),
       }).optional(),
+      z.object({ limit: z.number().int().positive().optional() }).strict().optional(),
     ],
     output: z.promise(z.array(MatchClaimSchema)),
   }),

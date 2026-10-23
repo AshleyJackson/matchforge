@@ -10,6 +10,8 @@ import {
   PoolListSchema,
   RegisterParticipantInputSchema,
   PersistenceStoreSchema,
+  SyncParticipantInputSchema,
+  SyncParticipantResultSchema,
 } from "./schemas";
 import { z } from "zod";
 import { clonePreferences, stableSerialize } from "./utils";
@@ -117,6 +119,31 @@ export class Matcher {
       await this.store.removeFromWaitingIndex(poolKey, id);
   }
 
+  /**
+   * Writes a participant's desired coordination state and waiting-index
+   * entries in one atomic step, creating the record when it is missing.
+   * Expired exclusions are dropped before writing. See
+   * `SyncParticipantResultSchema` for the outcomes; only `created` and
+   * `updated` write anything.
+   */
+  async syncParticipant(
+    input: z.infer<typeof SyncParticipantInputSchema>,
+  ): Promise<z.infer<typeof SyncParticipantResultSchema>> {
+    const validated = SyncParticipantInputSchema.parse(input);
+    if (!this.store.syncParticipant)
+      throw new Error("coordination store does not support syncParticipant");
+    const now = this.clock();
+    const exclusions = validated.exclusions
+      ? Object.fromEntries(
+          Object.entries(validated.exclusions).filter(([, until]) => until > now),
+        )
+      : undefined;
+    return this.store.syncParticipant({
+      ...validated,
+      ...(exclusions ? { exclusions } : {}),
+    });
+  }
+
   async heartbeat(id: string): Promise<void> {
     const participant = await this.store.updateParticipant(id, (current: z.infer<typeof ParticipantSchema>) => ({
       ...current,
@@ -132,6 +159,8 @@ export class Matcher {
       now: this.clock(),
       scanLimit: options.scanLimit ?? this.defaultScanLimit,
       excludeIds: options.excludeIds ?? [],
+      maxHeartbeatAgeMs: options.maxHeartbeatAgeMs,
+      cursor: options.cursor,
       strategy: options.strategy ?? { type: "fifo" },
       filter: options.filter,
       claimTtlMs: options.claimTtlMs ?? this.defaultClaimTtlMs,
@@ -144,6 +173,9 @@ export class Matcher {
         scanLimit: options.scanLimit ?? this.defaultScanLimit,
         excludeIds: options.excludeIds ?? [],
         filter: options.filter ?? null,
+        ...(options.maxHeartbeatAgeMs !== undefined
+          ? { maxHeartbeatAgeMs: options.maxHeartbeatAgeMs }
+          : {}),
         hasCompatibility: Boolean(options.compatibility),
         hasScore: Boolean(options.score),
         hasRelaxation: Boolean(options.relax),
@@ -151,6 +183,9 @@ export class Matcher {
       random: this.random,
     });
     if (result.status !== "matched") return result;
+    // A replayed `reserved` claim belongs to an attempt that never finished
+    // (or is still running). Saving by `matchId` is idempotent and commits
+    // are idempotent, so completing it here is safe either way.
     if (result.claim.state === "committed") return result;
     if (this.persistence) {
       try {
@@ -176,10 +211,9 @@ export class Matcher {
       }
     } else {
       await this.commitClaim(result.claim.claimId);
-      const committed = await this.store.getClaim(result.claim.claimId);
-      if (committed) return { status: "matched" as const, claim: committed };
     }
-    return result;
+    const committed = await this.store.getClaim(result.claim.claimId);
+    return committed ? { ...result, claim: committed } : result;
   }
 
   async commitClaim(claimId: string): Promise<void> {
@@ -207,11 +241,13 @@ export class Matcher {
   getQueueDepth(poolKey: string): Promise<number> {
     return this.store.getQueueDepth(poolKey);
   }
-  recover(): Promise<z.infer<typeof MatchClaimSchema>[]> {
+  /** Recovers at most `limit` (default 100) expired claims per call. */
+  recover(options: { limit?: number } = {}): Promise<z.infer<typeof MatchClaimSchema>[]> {
     return this.store.recoverExpiredClaims(
       this.clock(),
       async (claim: z.infer<typeof MatchClaimSchema>) =>
         !!(await this.persistence?.getMatch(claim.matchId)),
+      options,
     );
   }
 

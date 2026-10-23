@@ -98,7 +98,9 @@ bun run lint
 bunx tsc --noEmit
 ```
 
-When `UPSTASH_URL` and `UPSTASH_TOKEN` are present, `bun test` also runs the
-real Redis integration suite in `tests/upstash.test.ts`. Those tests use a
-unique namespace and clean up their keys. Without those variables, the
-integration tests are skipped.
+When `REDIS_URL` (for example `redis://127.0.0.1:6379`) or `UPSTASH_URL` and
+`UPSTASH_TOKEN` are present, `bun test` also runs the real Redis suites in
+`tests/contract.test.ts` and `tests/upstash.test.ts`. The contract suite runs the
+same cases against the in-memory store and every configured Redis. Those tests
+use a unique namespace and clean up their keys. Without those variables, the
+Redis integration tests are skipped.
