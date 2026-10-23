@@ -1,0 +1,122 @@
+name: Publish package to npm
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - package.json
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version to publish; must match package.json
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  version-check:
+    name: Check package version
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.version.outputs.changed }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compare package versions
+        id: version
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          MANUAL_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          new_version="$(node -p "require('./package.json').version")"
+          old_version=""
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$MANUAL_VERSION" != "$new_version" ]]; then
+              echo "::error::Manual version '$MANUAL_VERSION' does not match package.json version '$new_version'."
+              exit 1
+            fi
+
+            echo "Manual publish requested for version $new_version"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "version=$new_version" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            old_version="$(
+              git show "$BEFORE_SHA:package.json" |
+                node -e '
+                  let input = "";
+                  process.stdin.on("data", chunk => input += chunk);
+                  process.stdin.on("end", () => process.stdout.write(JSON.parse(input.replace(/^\uFEFF/, "")).version));
+                '
+            )"
+          fi
+
+          if [[ "$old_version" == "$new_version" ]]; then
+            echo "package.json changed, but its version did not: $new_version"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Version changed: ${old_version:-<none>} -> $new_version"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "version=$new_version" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Build and publish ${{ needs.version-check.outputs.version }}
+    needs: version-check
+    if: needs.version-check.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run tests
+        run: bun test
+
+      - name: Build package
+        run: bun run build
+
+      - name: Clear token-based npm auth
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset NODE_AUTH_TOKEN NPM_TOKEN
+          npm config delete "//registry.npmjs.org/:_authToken" || true
+          npm config delete "_authToken" || true
+          npm config delete "_auth" || true
+
+      - name: Publish to npm with OIDC
+        run: |
+          set -euo pipefail
+          env -u NODE_AUTH_TOKEN -u NPM_TOKEN \
+            npm publish --access public \
+              --registry=https://registry.npmjs.org/
